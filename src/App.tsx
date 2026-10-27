@@ -11,6 +11,7 @@ type DepthFrame = { width: number; height: number; depthScale: number; fx: numbe
 type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
 type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseYaw: number }
 type ModelOption = { id: string; name: string; url?: string }
+type DocumentPictureInPictureApi = { requestWindow(options?: { width?: number; height?: number }): Promise<Window> }
 
 const conditions: { id: Condition; number: string; title: string; description: string }[] = [
   { id: 'hidden', number: '01', title: '非表示', description: '自己表示なし' },
@@ -61,6 +62,8 @@ export default function App() {
   const stageRef = useRef<HTMLDivElement>(null)
   const colorCanvasRef = useRef<HTMLCanvasElement>(null)
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
+  const pipWindowRef = useRef<Window | null>(null)
+  const pipFrameRef = useRef<number | null>(null)
   const landmarkerRef = useRef<FaceLandmarker | null>(null)
   const threeSceneRef = useRef<THREE.Scene | null>(null)
   const avatarRef = useRef<LoadedAvatar | null>(null)
@@ -84,6 +87,7 @@ export default function App() {
   const [modelName, setModelName] = useState(bundledModels[0]?.name ?? 'アバターを選択してください')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pipSupported] = useState(() => typeof window !== 'undefined' && 'documentPictureInPicture' in window)
 
   useEffect(() => { conditionRef.current = condition }, [condition])
   useEffect(() => { workStateRef.current = workState }, [workState])
@@ -164,7 +168,7 @@ export default function App() {
     const stage = stageRef.current
     const canvas = avatarCanvasRef.current
     if (!stage || !canvas) return
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' })
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' })
     renderer.setClearColor(0x000000, 0)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -547,9 +551,59 @@ export default function App() {
   useEffect(() => () => {
     landmarkerRef.current?.close()
     avatarCacheRef.current.forEach((avatar) => disposeVrm(avatar.vrm))
+    if (pipFrameRef.current !== null && pipWindowRef.current && !pipWindowRef.current.closed) {
+      pipWindowRef.current.cancelAnimationFrame(pipFrameRef.current)
+      pipWindowRef.current.close()
+    }
   }, [])
 
   const activeCondition = conditions.find((item) => item.id === condition)!
+
+  const openPictureInPicture = async () => {
+    const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPictureApi }).documentPictureInPicture
+    if (!api) return
+    try {
+      const pipWindow = await api.requestWindow({ width: 560, height: 420 })
+      pipWindowRef.current = pipWindow
+      pipWindow.document.title = 'Self Attention · Preview'
+      pipWindow.document.body.style.cssText = 'margin:0;background:#171a18;overflow:hidden;'
+      const canvas = pipWindow.document.createElement('canvas')
+      canvas.width = 960
+      canvas.height = 720
+      canvas.style.cssText = 'display:block;width:100vw;height:100vh;object-fit:contain;'
+      pipWindow.document.body.append(canvas)
+      const context = canvas.getContext('2d')
+      if (!context) return
+
+      const render = () => {
+        if (pipWindowRef.current !== pipWindow || pipWindow.closed) return
+        context.clearRect(0, 0, canvas.width, canvas.height)
+        if (conditionRef.current !== 'hidden') {
+          const colorCanvas = colorCanvasRef.current
+          if (colorCanvas?.width && colorCanvas.height) {
+            context.save()
+            context.translate(canvas.width, 0)
+            context.scale(-1, 1)
+            context.drawImage(colorCanvas, 0, 0, canvas.width, canvas.height)
+            if (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive') {
+              const avatarCanvas = avatarCanvasRef.current
+              if (avatarCanvas?.width && avatarCanvas.height) context.drawImage(avatarCanvas, 0, 0, canvas.width, canvas.height)
+            }
+            context.restore()
+          }
+        }
+        pipFrameRef.current = pipWindow.requestAnimationFrame(render)
+      }
+      pipWindow.addEventListener('pagehide', () => {
+        if (pipFrameRef.current !== null) pipWindow.cancelAnimationFrame(pipFrameRef.current)
+        pipFrameRef.current = null
+        if (pipWindowRef.current === pipWindow) pipWindowRef.current = null
+      }, { once: true })
+      render()
+    } catch (cause) {
+      setError(`小窓を開けませんでした: ${cause instanceof Error ? cause.message : 'ブラウザーで利用できません'}`)
+    }
+  }
 
   return <main className="shell attention-shell">
     <header className="attention-header">
@@ -606,7 +660,7 @@ export default function App() {
       </aside>
 
       <section className="preview-panel">
-        <div className="preview-heading"><div><div className="eyebrow">リアルタイムプレビュー</div><h2>あなたの作業スペース</h2></div><div className="live-meta"><i className={cameraOn ? 'on' : ''} /> {cameraOn ? 'LIVE PREVIEW' : 'PREVIEW'} <span>│</span> 4:3</div></div>
+        <div className="preview-heading"><div><div className="eyebrow">リアルタイムプレビュー</div><h2>あなたの作業スペース</h2></div><div className="preview-actions">{pipSupported && <button className="pip-button" onClick={() => void openPictureInPicture()}>小窓で表示</button>}<div className="live-meta"><i className={cameraOn ? 'on' : ''} /> {cameraOn ? 'LIVE PREVIEW' : 'PREVIEW'} <span>│</span> 4:3</div></div></div>
         <div className={`preview-stage ${condition === 'hidden' ? 'is-hidden' : ''}`} ref={stageRef}>
           <canvas ref={colorCanvasRef} className="preview-video" />
           <canvas ref={avatarCanvasRef} className={`avatar-canvas ${condition === 'avatar' || condition === 'adaptive' ? 'visible' : ''}`} />
