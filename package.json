@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:parity": "vite --config parity/vite.config.ts --host 0.0.0.0",
+    "build:parity": "vite build --config parity/vite.config.ts",
     "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview",
     "depth:bridge": "sh scripts/run-depth-bridge.sh"
