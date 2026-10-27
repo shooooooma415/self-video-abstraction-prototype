@@ -1,266 +1,604 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
 import './prototype.css'
 
-type Condition = 'hidden' | 'original' | 'avatar'
-const labels: Record<Condition, string> = { hidden: '非表示', original: '実写', avatar: '顔アバター' }
+type Condition = 'hidden' | 'original' | 'avatar' | 'adaptive'
+type WorkState = 'working' | 'switching' | 'resting'
+type DepthFrame = { width: number; height: number; depthScale: number; fx: number; fy: number; ppx: number; ppy: number; pixels: Uint16Array; color: Uint8Array; colorStride: number }
+type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
+type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number }
+type ModelOption = { id: string; name: string; url?: string }
+
+const conditions: { id: Condition; number: string; title: string; description: string }[] = [
+  { id: 'hidden', number: '01', title: '非表示', description: '自己表示なし' },
+  { id: 'original', number: '02', title: '実写映像', description: '映像を表示' },
+  { id: 'avatar', number: '03', title: '通常アバター', description: '顔の動きに連動' },
+  { id: 'adaptive', number: '04', title: '状態反映アバター', description: '作業状態を表示' },
+]
+
 const wasmUrl = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm'
 const faceModelUrl = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+const bundledModelUrls = import.meta.glob<string>('/src/assets/models/*.vrm', { eager: true, query: '?url', import: 'default' })
+const bundledModels: ModelOption[] = Object.entries(bundledModelUrls).map(([path, url]) => {
+  const file = path.split('/').pop() ?? 'VRM model'
+  return { id: path, name: file.replace(/\.vrm$/i, '').replaceAll('_', ' '), url }
+})
 
-function drawAvatarFace(ctx: CanvasRenderingContext2D, points: { x: number; y: number }[], shapes: { categoryName: string; score: number }[], width: number, height: number) {
-  if (points.length < 478) return
-  const xy = (index: number) => ({ x: points[index].x * width, y: points[index].y * height })
-  const score = (name: string) => shapes.find(shape => shape.categoryName === name)?.score ?? 0
-  const eyes: [number, number, number][] = [[33, 133, 468], [362, 263, 473]]
-  ctx.save()
-  const cheekA = xy(234), cheekB = xy(454), forehead = xy(10), chin = xy(152)
-  const headCenter = { x: (cheekA.x + cheekB.x) / 2, y: (forehead.y + chin.y) / 2 }
-  const headRx = Math.max(9, Math.hypot(cheekB.x - cheekA.x, cheekB.y - cheekA.y) * 0.61)
-  const headRy = Math.max(12, Math.abs(chin.y - forehead.y) * 0.59)
-  ctx.shadowColor = '#43312c66'
-  ctx.shadowBlur = headRx * 0.16
-  ctx.shadowOffsetY = headRy * 0.045
-  const skinGradient = ctx.createLinearGradient(headCenter.x - headRx, headCenter.y - headRy, headCenter.x + headRx, headCenter.y + headRy)
-  skinGradient.addColorStop(0, '#f0c4a5')
-  skinGradient.addColorStop(0.42, '#dfad8d')
-  skinGradient.addColorStop(1, '#bb8167')
-  ctx.fillStyle = skinGradient
-  ctx.beginPath()
-  ctx.ellipse(headCenter.x, headCenter.y, headRx, headRy, 0, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.shadowColor = 'transparent'
-  ctx.shadowBlur = 0
-  ctx.shadowOffsetY = 0
-  const hairGradient = ctx.createLinearGradient(headCenter.x, headCenter.y - headRy, headCenter.x, headCenter.y - headRy * 0.05)
-  hairGradient.addColorStop(0, '#756054')
-  hairGradient.addColorStop(0.52, '#493b35')
-  hairGradient.addColorStop(1, '#302b29')
-  ctx.fillStyle = hairGradient
-  ctx.beginPath()
-  ctx.ellipse(headCenter.x, headCenter.y - headRy * 0.67, headRx * 1.04, headRy * 0.48, 0, Math.PI, Math.PI * 2)
-  ctx.lineTo(headCenter.x + headRx * 0.98, headCenter.y - headRy * 0.2)
-  ctx.quadraticCurveTo(headCenter.x + headRx * 0.6, headCenter.y - headRy * 0.46, headCenter.x + headRx * 0.28, headCenter.y - headRy * 0.42)
-  ctx.quadraticCurveTo(headCenter.x, headCenter.y - headRy * 0.58, headCenter.x - headRx * 0.28, headCenter.y - headRy * 0.42)
-  ctx.quadraticCurveTo(headCenter.x - headRx * 0.7, headCenter.y - headRy * 0.48, headCenter.x - headRx, headCenter.y - headRy * 0.18)
-  ctx.closePath()
-  ctx.fill()
-  ctx.fillStyle = skinGradient
-  for (const cheek of [cheekA, cheekB]) {
-    ctx.beginPath()
-    ctx.arc(cheek.x, cheek.y, headRx * 0.14, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  ctx.fillStyle = '#f5f3e9'
-  ctx.strokeStyle = '#f5f3e9'
-  for (const [cornerA, cornerB, irisIndex] of eyes) {
-    const a = xy(cornerA), b = xy(cornerB), iris = xy(irisIndex)
-    const eyeWidth = Math.hypot(b.x - a.x, b.y - a.y)
-    const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-    const blinkName = cornerA === 33 ? 'eyeBlinkLeft' : 'eyeBlinkRight'
-    const openness = 1 - Math.min(1, score(blinkName))
-    const eyeHeight = Math.max(1.2, eyeWidth * (0.28 * openness + 0.035))
-    ctx.shadowColor = '#39292055'
-    ctx.shadowBlur = eyeWidth * 0.12
-    ctx.strokeStyle = '#503b34'
-    ctx.lineWidth = Math.max(1.3, eyeWidth * 0.075)
-    ctx.beginPath()
-    ctx.moveTo(center.x - eyeWidth * 0.48, center.y - eyeHeight * 1.2)
-    ctx.quadraticCurveTo(center.x, center.y - eyeHeight * 2.1, center.x + eyeWidth * 0.48, center.y - eyeHeight * 1.2)
-    ctx.stroke()
-    ctx.strokeStyle = '#f5f3e9'
-    ctx.beginPath()
-    ctx.ellipse(center.x, center.y, eyeWidth * 0.48, eyeHeight, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.shadowColor = 'transparent'
-    ctx.shadowBlur = 0
-    if (openness > 0.18) {
-      const pupilX = center.x + Math.max(-eyeWidth * 0.16, Math.min(eyeWidth * 0.16, iris.x - center.x))
-      const pupilY = center.y + Math.max(-eyeHeight * 0.25, Math.min(eyeHeight * 0.25, iris.y - center.y))
-      ctx.fillStyle = '#262a26'
-      ctx.beginPath()
-      ctx.arc(pupilX, pupilY, Math.max(1.4, eyeWidth * 0.13), 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = '#f5f3e9'
+function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)) }
+
+function sampleDepth(frame: DepthFrame, normalizedX: number, normalizedY: number): number | null {
+  const centerX = Math.round(clamp(normalizedX, 0, 1) * (frame.width - 1))
+  const centerY = Math.round(clamp(normalizedY, 0, 1) * (frame.height - 1))
+  const values: number[] = []
+  for (let y = Math.max(0, centerY - 3); y <= Math.min(frame.height - 1, centerY + 3); y++) {
+    for (let x = Math.max(0, centerX - 3); x <= Math.min(frame.width - 1, centerX + 3); x++) {
+      const raw = frame.pixels[y * frame.width + x]
+      const meters = raw * frame.depthScale
+      if (raw > 0 && meters >= 0.12 && meters <= 4) values.push(meters)
     }
   }
-  const nose = xy(1), noseLeft = xy(98), noseRight = xy(327)
-  const noseWidth = Math.max(2, Math.hypot(noseRight.x - noseLeft.x, noseRight.y - noseLeft.y) * 0.18)
-  const noseGradient = ctx.createLinearGradient(nose.x - noseWidth, nose.y, nose.x + noseWidth, nose.y + noseWidth * 1.8)
-  noseGradient.addColorStop(0, '#c58d70')
-  noseGradient.addColorStop(0.5, '#edbd9d')
-  noseGradient.addColorStop(1, '#b87d64')
-  ctx.fillStyle = noseGradient
-  ctx.beginPath()
-  ctx.ellipse(nose.x, nose.y + noseWidth * 0.75, noseWidth, noseWidth * 1.5, 0, 0, Math.PI * 2)
-  ctx.fill()
-  const mouthLeft = xy(61), mouthRight = xy(291), upperLip = xy(13), lowerLip = xy(14)
-  const mouthWidth = Math.hypot(mouthRight.x - mouthLeft.x, mouthRight.y - mouthLeft.y)
-  const mouthCenter = { x: (mouthLeft.x + mouthRight.x) / 2, y: (upperLip.y + lowerLip.y) / 2 }
-  const mouthOpen = Math.max((lowerLip.y - upperLip.y) * 1.4, score('jawOpen') * mouthWidth * 0.34)
-  ctx.fillStyle = '#6e3e3c'
-  ctx.strokeStyle = '#6e3e3c'
-  ctx.beginPath()
-  if (mouthOpen > 2.5) {
-    ctx.ellipse(mouthCenter.x, mouthCenter.y, mouthWidth * 0.32, Math.min(mouthOpen, mouthWidth * 0.28), 0, 0, Math.PI * 2)
-    ctx.fill()
-  } else {
-    ctx.lineWidth = Math.max(1.5, mouthWidth * 0.07)
-    ctx.lineCap = 'round'
-    ctx.beginPath()
-    ctx.moveTo(mouthLeft.x + mouthWidth * 0.15, mouthCenter.y)
-    ctx.quadraticCurveTo(mouthCenter.x, mouthCenter.y + mouthWidth * 0.025, mouthRight.x - mouthWidth * 0.15, mouthCenter.y)
-    ctx.stroke()
-  }
-  ctx.restore()
+  if (!values.length) return null
+  values.sort((a, b) => a - b)
+  return values[Math.floor(values.length / 2)]
+}
+
+function disposeVrm(vrm: VRM) {
+  vrm.scene.traverse((object) => {
+    const mesh = object as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.geometry.dispose()
+    if (Array.isArray(mesh.material)) mesh.material.forEach((material) => material.dispose())
+    else mesh.material.dispose()
+  })
 }
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null)
-  const pipRef = useRef<Window | null>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const colorCanvasRef = useRef<HTMLCanvasElement>(null)
+  const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const landmarkerRef = useRef<FaceLandmarker | null>(null)
+  const threeSceneRef = useRef<THREE.Scene | null>(null)
+  const avatarRef = useRef<LoadedAvatar | null>(null)
+  const avatarCacheRef = useRef<Map<string, LoadedAvatar>>(new Map())
+  const pendingModelLoadsRef = useRef<Map<string, Promise<void>>>(new Map())
+  const bundledBuffersRef = useRef<Map<string, Promise<ArrayBuffer>>>(new Map())
+  const trackingRef = useRef<Tracking | null>(null)
+  const depthFrameRef = useRef<DepthFrame | null>(null)
+  const conditionRef = useRef<Condition>('avatar')
+  const workStateRef = useRef<WorkState>('working')
   const [condition, setCondition] = useState<Condition>('avatar')
-  const [camera, setCamera] = useState(false)
-  const [faceStatus, setFaceStatus] = useState<'未読込' | '読込中' | '準備完了' | '読込失敗'>('未読込')
+  const [workState, setWorkState] = useState<WorkState>('working')
+  const [cameraOn, setCameraOn] = useState(false)
+  const [tracking, setTracking] = useState(false)
+  const [depthConnected, setDepthConnected] = useState(false)
+  const [faceDepth, setFaceDepth] = useState<number | null>(null)
+  const [faceYaw, setFaceYaw] = useState<number | null>(null)
+  const [faceRoll, setFaceRoll] = useState<number | null>(null)
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(bundledModels)
+  const [selectedModel, setSelectedModel] = useState('')
+  const [modelName, setModelName] = useState(bundledModels[0]?.name ?? 'アバターを選択してください')
   const [error, setError] = useState('')
-  const pipSupported = 'documentPictureInPicture' in window
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => () => {
-    streamRef.current?.getTracks().forEach(track => track.stop())
-    if (pipRef.current && !pipRef.current.closed) pipRef.current.close()
-    faceLandmarkerRef.current?.close()
+  useEffect(() => { conditionRef.current = condition }, [condition])
+  useEffect(() => { workStateRef.current = workState }, [workState])
+
+  useEffect(() => {
+    if (!cameraOn) return
+    let cancelled = false
+    let timer = 0
+    const pollDepth = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8090/depth', { cache: 'no-store' })
+        if (!response.ok) throw new Error('Depth bridge unavailable')
+        const buffer = await response.arrayBuffer()
+        const view = new DataView(buffer)
+        if (buffer.byteLength < 52 || view.getUint32(0, true) !== 0x50445352 || view.getUint16(4, true) !== 2) throw new Error('Invalid depth frame')
+        const headerSize = view.getUint16(6, true)
+        const width = view.getUint32(8, true)
+        const height = view.getUint32(12, true)
+        const pixelCount = width * height
+        const colorBytes = view.getUint32(36, true)
+        const colorStride = view.getUint32(40, true)
+        const colorOffset = headerSize + pixelCount * 2
+        if (headerSize < 52 || buffer.byteLength < colorOffset + colorBytes || colorStride < width * 3 || colorBytes < colorStride * height) throw new Error('Incomplete depth frame')
+        const depthFrame: DepthFrame = {
+          width,
+          height,
+          depthScale: view.getFloat32(16, true),
+          fx: view.getFloat32(20, true),
+          fy: view.getFloat32(24, true),
+          ppx: view.getFloat32(28, true),
+          ppy: view.getFloat32(32, true),
+          pixels: new Uint16Array(buffer, headerSize, pixelCount),
+          color: new Uint8Array(buffer, colorOffset, colorBytes),
+          colorStride,
+        }
+        depthFrameRef.current = depthFrame
+        const colorCanvas = colorCanvasRef.current
+        const context = colorCanvas?.getContext('2d')
+        if (colorCanvas && context) {
+          if (colorCanvas.width !== width || colorCanvas.height !== height) {
+            colorCanvas.width = width
+            colorCanvas.height = height
+          }
+          const image = context.createImageData(width, height)
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const source = y * colorStride + x * 3
+              const target = (y * width + x) * 4
+              image.data[target] = depthFrame.color[source]
+              image.data[target + 1] = depthFrame.color[source + 1]
+              image.data[target + 2] = depthFrame.color[source + 2]
+              image.data[target + 3] = 255
+            }
+          }
+          context.putImageData(image, 0, 0)
+        }
+        setDepthConnected(true)
+      } catch {
+        depthFrameRef.current = null
+        setDepthConnected(false)
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pollDepth, 50)
+      }
+    }
+    void pollDepth()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      depthFrameRef.current = null
+      setDepthConnected(false)
+      setFaceDepth(null)
+      setFaceYaw(null)
+      setFaceRoll(null)
+    }
+  }, [cameraOn])
+
+  useEffect(() => {
+    const stage = stageRef.current
+    const canvas = avatarCanvasRef.current
+    if (!stage || !canvas) return
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' })
+    renderer.setClearColor(0x000000, 0)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    const scene = new THREE.Scene()
+    threeSceneRef.current = scene
+    const camera = new THREE.PerspectiveCamera(50, 4 / 3, 0.03, 8)
+    camera.position.set(0, 0, 0)
+    camera.lookAt(0, 0, -1)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8c7d75, 2.2))
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.1)
+    keyLight.position.set(-1, 2, 4)
+    scene.add(keyLight)
+    const fillLight = new THREE.DirectionalLight(0xf4c3ad, 0.8)
+    fillLight.position.set(2, -1, 2)
+    scene.add(fillLight)
+
+    const resize = () => {
+      const rect = stage.getBoundingClientRect()
+      if (!rect.width || !rect.height) return
+      renderer.setSize(rect.width, rect.height, false)
+      camera.aspect = rect.width / rect.height
+      camera.updateProjectionMatrix()
+    }
+    const observer = new ResizeObserver(resize)
+    observer.observe(stage)
+    resize()
+
+    let previousTime = performance.now()
+    renderer.setAnimationLoop((time) => {
+      const delta = Math.min((time - previousTime) / 1000, 0.05)
+      previousTime = time
+      const loaded = avatarRef.current
+      const pose = trackingRef.current
+      const hasDepthPose = Boolean(pose && pose.depthMeters)
+      if (loaded) {
+        const avatarVisible = Boolean(hasDepthPose && (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive'))
+        loaded.vrm.scene.visible = avatarVisible
+      }
+      if (loaded && pose && pose.depthMeters && (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive')) {
+        const depth = pose.depthMeters
+        const overlayDepth = Math.max(depth - 0.02, 0.03)
+        const frame = depthFrameRef.current
+        if (frame) {
+          camera.fov = 2 * Math.atan(frame.height / (2 * frame.fy)) * 180 / Math.PI
+          camera.aspect = stage.clientWidth / Math.max(stage.clientHeight, 1)
+          camera.updateProjectionMatrix()
+        }
+        const yawWidthCorrection = Math.min(1.8, 1 / Math.max(Math.cos(pose.yaw), 0.56))
+        const targetWidth = Math.max(0.01, frame ? pose.width * frame.width / frame.fx * overlayDepth * yawWidthCorrection * 1.28 : 0.2)
+        const scale = targetWidth / Math.max(loaded.width, 0.001)
+        const avatarScene = loaded.vrm.scene
+        avatarScene.scale.setScalar(scale)
+        avatarScene.rotation.order = 'YXZ'
+        avatarScene.rotation.set(pose.pitch, pose.yaw, pose.roll)
+        const offset = loaded.center.clone().multiplyScalar(scale).applyEuler(avatarScene.rotation)
+        const centerX = frame ? ((pose.x * frame.width - frame.ppx) / frame.fx) * overlayDepth + overlayDepth * 0.015 : (pose.x - 0.485) * overlayDepth
+        const centerY = frame ? -((pose.y * frame.height - frame.ppy) / frame.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
+        avatarScene.position.set(centerX - offset.x, centerY - offset.y, -overlayDepth - offset.z)
+
+        const isAdaptive = conditionRef.current === 'adaptive'
+        const tired = isAdaptive && workStateRef.current === 'resting' ? 0.65 : isAdaptive && workStateRef.current === 'switching' ? 0.22 : 0
+        const expressions = loaded.vrm.expressionManager
+        expressions?.setValue('blink', clamp(Math.max(pose.blink, tired * 0.8), 0, 1))
+        expressions?.setValue('aa', clamp(Math.max(pose.mouth, tired * 0.1), 0, 1))
+        expressions?.setValue('sad', tired)
+        expressions?.setValue('relaxed', isAdaptive && workStateRef.current === 'resting' ? 0.35 : 0)
+        loaded.vrm.update(delta)
+      }
+      renderer.render(scene, camera)
+    })
+
+    return () => {
+      observer.disconnect()
+      renderer.setAnimationLoop(null)
+      renderer.dispose()
+      threeSceneRef.current = null
+    }
   }, [])
 
-  const loadFaceLandmarker = async () => {
-    if (faceLandmarkerRef.current) return
-    setFaceStatus('読込中')
+  const activateModel = useCallback((id: string, name: string) => {
+    const model = avatarCacheRef.current.get(id)
+    if (!model) return
+    if (avatarRef.current && avatarRef.current !== model) avatarRef.current.vrm.scene.visible = false
+    avatarRef.current = model
+    model.vrm.scene.visible = Boolean(trackingRef.current?.depthMeters)
+    setSelectedModel(id)
+    setModelName(name)
+    setError('')
+  }, [])
+
+  const loadModelBuffer = useCallback(async (id: string, name: string, buffer: ArrayBuffer) => {
+    const cached = avatarCacheRef.current.get(id)
+    if (cached) {
+      activateModel(id, name)
+      return
+    }
+    const pending = pendingModelLoadsRef.current.get(id)
+    if (pending) {
+      await pending
+      activateModel(id, name)
+      return
+    }
+    let finishLoad = () => {}
+    const loadLock = new Promise<void>((resolve) => { finishLoad = resolve })
+    pendingModelLoadsRef.current.set(id, loadLock)
+    setBusy(true)
+    setError('')
     try {
-      const files = await FilesetResolver.forVisionTasks(wasmUrl)
-      let landmarker: FaceLandmarker
-      try {
-        landmarker = await FaceLandmarker.createFromOptions(files, {
-          baseOptions: { modelAssetPath: faceModelUrl, delegate: 'GPU' },
-          runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true,
-        })
-      } catch {
-        landmarker = await FaceLandmarker.createFromOptions(files, {
-          baseOptions: { modelAssetPath: faceModelUrl, delegate: 'CPU' },
-          runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true,
+      const loader = new GLTFLoader()
+      loader.register((parser) => new VRMLoaderPlugin(parser))
+      const gltf = await loader.parseAsync(buffer, '')
+      const vrm = gltf.userData.vrm as VRM | undefined
+      if (!vrm) throw new Error('VRMモデルを読み込めませんでした。')
+      const threeScene = threeSceneRef.current
+      if (!threeScene) throw new Error('3Dプレビューを初期化できませんでした。')
+      if (vrm.meta.metaVersion === '0') VRMUtils.rotateVRM0(vrm)
+      vrm.scene.visible = false
+      vrm.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh
+        if (!mesh.isMesh) return
+        mesh.frustumCulled = false
+        mesh.castShadow = false
+      })
+      vrm.scene.updateMatrixWorld(true)
+      const wholeBox = new THREE.Box3().setFromObject(vrm.scene)
+      const wholeHeight = Math.max(wholeBox.max.y - wholeBox.min.y, 0.001)
+      const headNames = /head|face|hair|eye|brow|mouth|lash|cheek|まゆ|髪|顔/i
+      const candidateMeshes: THREE.Object3D[] = []
+      vrm.scene.traverse((object) => {
+        if (!(object as THREE.Mesh).isMesh) return
+        const box = new THREE.Box3().setFromObject(object)
+        const centerHeight = (box.min.y + box.max.y) / 2
+        if (headNames.test(object.name) || centerHeight > wholeBox.min.y + wholeHeight * 0.72) candidateMeshes.push(object)
+      })
+      if (candidateMeshes.length) {
+        vrm.scene.traverse((object) => {
+          if ((object as THREE.Mesh).isMesh) object.visible = candidateMeshes.includes(object)
         })
       }
-      faceLandmarkerRef.current = landmarker
-      setFaceStatus('準備完了')
-    } catch (e) {
-      console.error(e)
-      setFaceStatus('読込失敗')
-      setError('顔の追跡モデルを読み込めません。実写表示は引き続き利用できます。')
+      vrm.scene.updateMatrixWorld(true)
+      // Hidden body meshes still participate in Box3.setFromObject(scene), so
+      // derive the registration anchor from face/head geometry explicitly.
+      const namedFaceMeshes = candidateMeshes.filter((object) => /face|head|skin|顔|頭/i.test(object.name))
+      const anchorMeshes = namedFaceMeshes.length ? namedFaceMeshes : candidateMeshes
+      const box = new THREE.Box3()
+      for (const object of anchorMeshes) box.expandByObject(object)
+      if (box.isEmpty()) throw new Error('モデルの顔メッシュを見つけられませんでした。')
+      const center = box.getCenter(new THREE.Vector3())
+      const size = box.getSize(new THREE.Vector3())
+      const model = { vrm, box, center, width: Math.max(size.x, 0.001) }
+      if (avatarRef.current) avatarRef.current.vrm.scene.visible = false
+      threeScene.add(vrm.scene)
+      avatarCacheRef.current.set(id, model)
+      avatarRef.current = model
+      vrm.scene.visible = Boolean(trackingRef.current?.depthMeters)
+      setSelectedModel(id)
+      setModelName(name)
+      setError('')
+    } catch (cause) {
+      console.error(cause)
+      setError(cause instanceof Error ? cause.message : 'VRMファイルを読み込めませんでした。')
+    } finally {
+      setBusy(false)
+      finishLoad()
+      if (pendingModelLoadsRef.current.get(id) === loadLock) pendingModelLoadsRef.current.delete(id)
     }
-  }
+  }, [activateModel])
+
+  const loadModel = useCallback(async (file: File) => {
+    const id = `local:${file.name}:${file.size}:${file.lastModified}`
+    const name = file.name.replace(/\.vrm$/i, '')
+    try {
+      await loadModelBuffer(id, name, await file.arrayBuffer())
+      setModelOptions((current) => current.some((item) => item.id === id) ? current : [...current, { id, name }])
+    } catch (cause) {
+      console.error(cause)
+      setError('VRMファイルを読み込めませんでした。')
+    }
+  }, [loadModelBuffer])
+
+  const loadBundledModel = useCallback(async (model: ModelOption) => {
+    const cached = avatarCacheRef.current.get(model.id)
+    if (cached) {
+      activateModel(model.id, model.name)
+      return
+    }
+    if (!model.url) return
+    setBusy(true)
+    try {
+      let bufferPromise = bundledBuffersRef.current.get(model.id)
+      if (!bufferPromise) {
+        bufferPromise = fetch(model.url).then((response) => {
+          if (!response.ok) throw new Error(`モデルを取得できませんでした (${response.status})`)
+          return response.arrayBuffer()
+        })
+        bundledBuffersRef.current.set(model.id, bufferPromise)
+      }
+      await loadModelBuffer(model.id, model.name, await bufferPromise)
+    } catch (cause) {
+      console.error(cause)
+      bundledBuffersRef.current.delete(model.id)
+      setError(cause instanceof Error ? cause.message : 'VRMモデルを読み込めませんでした。')
+    } finally {
+      setBusy(false)
+    }
+  }, [activateModel, loadModelBuffer])
+
+  useEffect(() => {
+    const firstModel = bundledModels[0]
+    if (firstModel) void loadBundledModel(firstModel)
+  }, [loadBundledModel])
+
+  useEffect(() => {
+    const colorCanvas = colorCanvasRef.current
+    if (!cameraOn || !colorCanvas) return
+    let frame = 0
+    let lastDetection = 0
+    const detect = (time: number) => {
+      frame = requestAnimationFrame(detect)
+      const landmarker = landmarkerRef.current
+      if (!landmarker || colorCanvas.width < 1 || colorCanvas.height < 1 || time - lastDetection < 50) return
+      lastDetection = time
+      try {
+        const result = landmarker.detectForVideo(colorCanvas, time)
+        const face = result.faceLandmarks[0]
+        const blendshapes = result.faceBlendshapes[0]?.categories ?? []
+        const getShape = (name: string) => blendshapes.find((shape) => shape.categoryName === name)?.score ?? 0
+        if (!face) {
+          trackingRef.current = null
+          setTracking(false)
+          setFaceDepth(null)
+          setFaceYaw(null)
+          setFaceRoll(null)
+          return
+        }
+        const left = face[234], right = face[454], nose = face[1], forehead = face[10], chin = face[152]
+        const eyeL = face[33], eyeR = face[263]
+        const videoAspect = colorCanvas.width / Math.max(colorCanvas.height, 1)
+        const stageRect = stageRef.current?.getBoundingClientRect()
+        const stageAspect = stageRect ? stageRect.width / Math.max(stageRect.height, 1) : 4 / 3
+        const cropX = Math.max(1, videoAspect / stageAspect)
+        const cropY = Math.max(1, stageAspect / videoAspect)
+        const mapX = (value: number) => 0.5 + (value - 0.5) * cropX
+        const mapY = (value: number) => 0.5 + (value - 0.5) * cropY
+        const faceWidth = Math.abs(right.x - left.x) * cropX
+        const cheekCenterX = (left.x + right.x) / 2
+        const centerX = mapX(cheekCenterX + (nose.x - cheekCenterX) * 0.35)
+        const centerY = mapY((forehead.y + chin.y) / 2)
+        const eyeLineRoll = -Math.atan2((eyeR.y - eyeL.y) * cropY, (eyeR.x - eyeL.x) * cropX)
+        let roll = eyeLineRoll
+        const depthYaw = ((left.z ?? 0) - (right.z ?? 0)) * 1.2
+        const positionYaw = ((nose.x - cheekCenterX) / Math.max(Math.abs(right.x - left.x), 0.001)) * 1.8
+        let yaw = clamp(positionYaw + depthYaw * 2, -1.25, 1.25)
+        let posePitch: number | null = null
+        let poseRoll: number | null = null
+        const faceTransform = result.facialTransformationMatrixes[0]
+        if (faceTransform?.data.length === 16) {
+          const matrix = new THREE.Matrix4().fromArray(faceTransform.data)
+          const matrixPosition = new THREE.Vector3()
+          const quaternion = new THREE.Quaternion()
+          const matrixScale = new THREE.Vector3()
+          matrix.decompose(matrixPosition, quaternion, matrixScale)
+          const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ')
+          yaw = clamp(euler.y, -1.25, 1.25)
+          posePitch = euler.x
+          poseRoll = euler.z
+        }
+        roll = clamp(poseRoll ?? eyeLineRoll, -0.65, 0.65)
+        const eyeLine = mapY((eyeL.y + eyeR.y) / 2)
+        const faceHeight = Math.max(mapY(chin.y) - mapY(forehead.y), 0.001)
+        const landmarkPitch = clamp(((mapY(nose.y) - eyeLine) / faceHeight - 0.32) * 1.2, -0.45, 0.45)
+        const pitch = clamp(posePitch ?? landmarkPitch, -0.65, 0.65)
+        const prior = trackingRef.current
+        const depthFrame = depthFrameRef.current
+        const rawDepth = depthFrame ? sampleDepth(depthFrame, nose.x, nose.y) : null
+        const measured: Tracking = {
+          x: centerX,
+          y: centerY,
+          width: faceWidth,
+          yaw,
+          pitch,
+          roll,
+          blink: Math.max(getShape('eyeBlinkLeft'), getShape('eyeBlinkRight')),
+          mouth: Math.max(getShape('jawOpen'), getShape('mouthFunnel') * 0.4),
+          depthMeters: prior?.depthMeters && rawDepth ? prior.depthMeters + (rawDepth - prior.depthMeters) * 0.38 : rawDepth,
+        }
+        const amount = prior ? 0.42 : 1
+        trackingRef.current = prior ? {
+          x: prior.x + (measured.x - prior.x) * amount,
+          y: prior.y + (measured.y - prior.y) * amount,
+          width: prior.width + (measured.width - prior.width) * amount,
+          yaw: prior.yaw + (measured.yaw - prior.yaw) * amount,
+          pitch: prior.pitch + (measured.pitch - prior.pitch) * amount,
+          roll: prior.roll + (measured.roll - prior.roll) * amount,
+          blink: measured.blink,
+          mouth: prior.mouth + (measured.mouth - prior.mouth) * 0.6,
+          depthMeters: measured.depthMeters,
+        } : measured
+        setTracking(true)
+        setFaceDepth(measured.depthMeters)
+        setFaceYaw(trackingRef.current.yaw)
+        setFaceRoll(trackingRef.current.roll)
+      } catch (cause) {
+        console.error('Face tracking failed:', cause)
+        setTracking(false)
+      }
+    }
+    frame = requestAnimationFrame(detect)
+    return () => cancelAnimationFrame(frame)
+  }, [cameraOn])
 
   const startCamera = async () => {
     setError('')
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
+      const response = await fetch('http://127.0.0.1:8090/health', { cache: 'no-store' })
+        .catch(() => { throw new Error('RealSense depth bridge is not available') })
+      if (!response.ok) throw new Error('RealSense depth bridge is not available')
+      if (!landmarkerRef.current) {
+        const files = await FilesetResolver.forVisionTasks(wasmUrl)
+        let landmarker: FaceLandmarker
+        try {
+          landmarker = await FaceLandmarker.createFromOptions(files, {
+            baseOptions: { modelAssetPath: faceModelUrl, delegate: 'GPU' },
+            runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+          })
+        } catch {
+          landmarker = await FaceLandmarker.createFromOptions(files, {
+            baseOptions: { modelAssetPath: faceModelUrl, delegate: 'CPU' },
+            runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+          })
+        }
+        landmarkerRef.current = landmarker
       }
-      setCamera(true)
-    } catch (e) {
-      console.error(e)
-      setError(e instanceof DOMException && e.name === 'NotAllowedError'
-        ? 'カメラの利用が許可されていません。ブラウザの設定を確認してください。'
-        : 'カメラを利用できません。接続とブラウザの権限を確認してください。')
-    }
-  }
-
-  useEffect(() => {
-    if (condition === 'avatar' && camera && faceStatus === '未読込') void loadFaceLandmarker()
-  }, [condition, camera, faceStatus])
-
-  useEffect(() => {
-    if (!camera || !videoRef.current || !canvasRef.current) return
-    let raf = 0
-    let lastFrame = 0
-    const render = (now: number) => {
-      raf = requestAnimationFrame(render)
-      if (now - lastFrame < 80) return
-      lastFrame = now
-      const video = videoRef.current
-      const canvas = canvasRef.current
-      const ctx = canvas?.getContext('2d')
-      if (!video || !canvas || !ctx || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
-      if (canvas.width !== 320 || canvas.height !== 240) { canvas.width = 320; canvas.height = 240 }
-
-      if (condition === 'hidden') {
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-        return
-      }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      if (condition !== 'avatar' || !faceLandmarkerRef.current || faceStatus !== '準備完了') return
-      try {
-        const faceResult = faceLandmarkerRef.current.detectForVideo(video, now)
-        if (faceResult.faceLandmarks[0]) drawAvatarFace(ctx, faceResult.faceLandmarks[0], faceResult.faceBlendshapes[0]?.categories ?? [], canvas.width, canvas.height)
-      } catch (e) {
-        console.error('Face tracking failed:', e)
-      }
-    }
-    raf = requestAnimationFrame(render)
-    return () => cancelAnimationFrame(raf)
-  }, [camera, condition, faceStatus])
-
-  const openPip = async () => {
-    if (!pipSupported || condition === 'hidden') return
-    try {
-      const api = (window as unknown as Window & { documentPictureInPicture: { requestWindow: (options: { width: number; height: number }) => Promise<Window> } }).documentPictureInPicture
-      const pip = await api.requestWindow({ width: 340, height: 280 })
-      pipRef.current = pip
-      pip.document.body.style.cssText = 'margin:0;background:#242724;display:grid;place-items:center'
-      const canvas = pip.document.createElement('canvas')
-      canvas.width = 320
-      canvas.height = 240
-      canvas.style.cssText = 'width:320px;height:240px;transform:scaleX(-1)'
-      pip.document.body.append(canvas)
-      const copyFrame = () => {
-        if (pip.closed) return
-        if (canvasRef.current) canvas.getContext('2d')?.drawImage(canvasRef.current, 0, 0, 320, 240)
-        requestAnimationFrame(copyFrame)
-      }
-      copyFrame()
-      pip.addEventListener('pagehide', () => { pipRef.current = null })
-    } catch (e) {
-      console.error(e)
-      setError('フローティング表示を開けませんでした。')
+      setCameraOn(true)
+    } catch (cause) {
+      console.error(cause)
+      setError(cause instanceof Error && cause.message.includes('bridge')
+        ? 'D415 ブリッジが停止しています。別のターミナルで「npm run depth:bridge」を実行してください。'
+        : '顔追跡モデルを読み込めません。ネットワーク接続を確認してください。')
     }
   }
 
   const stopCamera = () => {
-    if (pipRef.current && !pipRef.current.closed) pipRef.current.close()
-    pipRef.current = null
-    streamRef.current?.getTracks().forEach(track => track.stop())
-    streamRef.current = null
-    if (videoRef.current) videoRef.current.srcObject = null
-    setCamera(false)
+    trackingRef.current = null
+    depthFrameRef.current = null
+    setTracking(false)
+    setDepthConnected(false)
+    setFaceDepth(null)
+    setFaceYaw(null)
+    setFaceRoll(null)
+    setCameraOn(false)
+    const canvas = colorCanvasRef.current
+    const context = canvas?.getContext('2d')
+    if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height)
   }
 
-  return <main className="shell">
-    <header><div className="brand">FIELD STUDY <span>PROTOTYPE</span></div><div className="privacy"><i />映像は端末内で処理し、保存しません</div></header>
-    <section className="prototype">
-      <div className="viewer-panel">
-        <div className="conditions" role="group" aria-label="映像表示条件">{(['avatar','original','hidden'] as Condition[]).map(c => <button key={c} className={`condition ${condition === c ? 'selected' : ''}`} aria-pressed={condition === c} onClick={() => setCondition(c)}>{labels[c]}</button>)}</div>
-        <div className="video-frame">
-          {condition === 'hidden' ? <div className="empty-preview">自己映像は非表示です</div> : <canvas ref={canvasRef} width="320" height="240" aria-label={`${labels[condition]}映像`} />}
-          <span className="preview-label">{labels[condition]}</span>
+  useEffect(() => () => {
+    landmarkerRef.current?.close()
+    avatarCacheRef.current.forEach((avatar) => disposeVrm(avatar.vrm))
+  }, [])
+
+  const activeCondition = conditions.find((item) => item.id === condition)!
+
+  return <main className="shell attention-shell">
+    <header className="attention-header">
+      <div className="attention-brand"><span className="brand-mark">◉</span><div><b>Self Attention</b><small>LAB / PROTOTYPE</small></div></div>
+      <div className="prototype-badge"><i /> プロトタイプ <span>v0.1.0</span></div>
+    </header>
+
+    <section className="attention-layout">
+      <aside className="setup-panel">
+        <div className="eyebrow">実験セットアップ</div>
+        <h1>表示条件を選ぶ</h1>
+        <p className="panel-lead">表示方法を切り替えながら、プレビューを確認できます。</p>
+
+        <div className="setup-section">
+          <div className="section-kicker"><span>01</span> 表示条件</div>
+          <div className="condition-list" role="radiogroup" aria-label="表示条件">
+            {conditions.map((item) => <button key={item.id} className={`condition-card ${condition === item.id ? 'active' : ''}`} role="radio" aria-checked={condition === item.id} onClick={() => setCondition(item.id)}>
+              <span className="condition-number">{item.number}</span><span className="condition-copy"><b>{item.title}</b><small>{item.description}</small></span><span className="radio-dot" />
+            </button>)}
+          </div>
         </div>
-        <video ref={videoRef} muted playsInline className="hidden-video" />
-        <div className="status"><span className={`dot ${camera ? 'live' : ''}`} />{camera ? 'カメラ使用中' : 'カメラ未開始'}{condition === 'avatar' && <small> · 顔 {camera ? faceStatus : '未読込'}</small>}</div>
-        {error && <p className="error" role="alert">{error}</p>}
-        {!camera ? <button className="primary full" onClick={() => void startCamera()}>カメラを利用開始 <span>→</span></button> : <div className="controls"><button className="secondary" onClick={() => void openPip()} disabled={!pipSupported || condition === 'hidden'}>{pipSupported ? '小窓表示を開く ↗' : 'このブラウザは小窓表示に非対応'}</button><button className="text-button" onClick={stopCamera}>カメラを停止</button></div>}
-        {camera && !pipSupported && <p className="hint">このブラウザでは、ブラウザ内表示のみ利用できます。</p>}
-      </div>
+
+        <div className="setup-section">
+          <div className="section-kicker"><span>02</span> カメラ</div>
+          <div className="camera-card"><span className={`camera-indicator ${depthConnected ? 'on' : ''}`} /><div><b>{depthConnected ? 'RealSense D415 接続中' : 'D415 深度ブリッジ未接続'}</b><small>{depthConnected ? 'カラー映像・深度フレーム受信中' : 'npm run depth:bridge で起動'}</small></div>
+            {cameraOn ? <button className="stop-button" onClick={stopCamera}>停止</button> : <button className="connect-button" onClick={() => void startCamera()}>接続</button>}
+          </div>
+          {error && <p className="error" role="alert">{error}</p>}
+        </div>
+
+        <div className="setup-section">
+          <div className="section-kicker"><span>03</span> アバターモデル</div>
+          <div className="model-label">表示するモデル <span>VRM 0.x / 1.0</span></div>
+          <div className="model-card"><span className="model-token">◉</span><span className="model-select-wrap"><select className="model-select" aria-label="表示するモデル" value={selectedModel} disabled={busy} onChange={(event) => {
+            const model = modelOptions.find((item) => item.id === event.target.value)
+            if (!model) return
+            if (model.url) void loadBundledModel(model)
+            else activateModel(model.id, model.name)
+          }}>
+            <option value="" disabled>モデルを選択</option>
+            {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+          </select><small>{busy ? 'モデルを読み込み中…' : avatarRef.current ? `${modelName} · ローカルに読み込み済み` : 'VRMモデルライブラリ'}</small></span><span className="model-type">VRM</span></div>
+          <input ref={fileRef} className="file-input" type="file" accept=".vrm,model/gltf-binary,application/octet-stream" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadModel(file); event.currentTarget.value = '' }} />
+          <button className="add-model" onClick={() => fileRef.current?.click()}>＋ VRMをライブラリに追加</button>
+        </div>
+
+        <div className="setup-section work-section">
+          <div className="section-kicker"><span>04</span> 作業状態</div>
+          <div className="work-state-buttons" role="group" aria-label="作業状態">
+            <button className={workState === 'working' ? 'chosen' : ''} onClick={() => setWorkState('working')}>✦ 作業中</button>
+            <button className={workState === 'switching' ? 'chosen' : ''} onClick={() => setWorkState('switching')}>▶ 気分転換</button>
+            <button className={workState === 'resting' ? 'chosen' : ''} onClick={() => setWorkState('resting')}>◌ 休憩中</button>
+          </div>
+          <small className="section-hint">条件04のアバターに作業状態が反映されます</small>
+        </div>
+        <div className="privacy-note"><span>✥</span><div><b>プライバシーを大切に</b><small>映像・顔データは端末内で処理されます。</small></div></div>
+      </aside>
+
+      <section className="preview-panel">
+        <div className="preview-heading"><div><div className="eyebrow">リアルタイムプレビュー</div><h2>あなたの作業スペース</h2></div><div className="live-meta"><i className={cameraOn ? 'on' : ''} /> {cameraOn ? 'LIVE PREVIEW' : 'PREVIEW'} <span>│</span> 4:3</div></div>
+        <div className={`preview-stage ${condition === 'hidden' ? 'is-hidden' : ''}`} ref={stageRef}>
+          <canvas ref={colorCanvasRef} className="preview-video" />
+          <canvas ref={avatarCanvasRef} className={`avatar-canvas ${condition === 'avatar' || condition === 'adaptive' ? 'visible' : ''}`} />
+          <span className="frame-corner top-left" /><span className="frame-corner top-right" /><span className="frame-corner bottom-left" /><span className="frame-corner bottom-right" />
+          {condition === 'hidden' && <div className="hidden-overlay"><span>◉</span><b>自己映像は非表示です</b><small>カメラと顔トラッキングは継続しています</small></div>}
+          {!cameraOn && condition !== 'hidden' && <div className="preview-start"><span>◉</span><b>カメラを接続してプレビューを開始</b><button onClick={() => void startCamera()}>カメラを接続</button></div>}
+          {(condition === 'avatar' || condition === 'adaptive') && cameraOn && !depthConnected && <div className="model-prompt">深度ブリッジを起動すると、D415の距離に合わせて表示します</div>}
+        </div>
+        <div className="preview-caption"><span className="caption-index">{activeCondition.number}</span><div className="caption-copy"><b>{activeCondition.title}</b><small>{activeCondition.description}</small></div><span className={`tracking-label ${tracking && depthConnected ? 'on' : ''}`}><i />{tracking && depthConnected ? `顔・深度を追跡中 · ${faceDepth ? `${faceDepth.toFixed(2)} m` : '距離未取得'}${faceYaw === null ? '' : ` · 向き ${Math.round(faceYaw * 180 / Math.PI)}°`}${faceRoll === null ? '' : ` · 傾き ${Math.round(faceRoll * 180 / Math.PI)}°`}` : '顔・深度の接続待ち'}</span></div>
+        <div className={`progress-bars ${condition === 'adaptive' ? 'adaptive' : ''}`}><i /><i /><i /></div>
+        <div className="condition-message"><span>✦</span><span>条件{activeCondition.number}では{condition === 'adaptive' ? '作業状態に応じてアバターの表情やポーズが変化します。' : '顔の動きに合わせてアバターが追従します。'}</span></div>
+      </section>
     </section>
-    <footer><span>LOCAL ONLY · NO RECORDING</span><span>顔モデルは初回に Google の配信元から取得します</span></footer>
+    <footer className="attention-footer"><span>SELF ATTENTION SUPPORT SYSTEM</span><span>LOCAL PROTOTYPE · 2026</span></footer>
   </main>
 }
