@@ -9,7 +9,7 @@ type Condition = 'hidden' | 'original' | 'avatar' | 'adaptive'
 type WorkState = 'working' | 'switching' | 'resting'
 type DepthFrame = { width: number; height: number; depthScale: number; fx: number; fy: number; ppx: number; ppy: number; pixels: Uint16Array; color: Uint8Array; colorStride: number }
 type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
-type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number }
+type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseYaw: number }
 type ModelOption = { id: string; name: string; url?: string }
 
 const conditions: { id: Condition; number: string; title: string; description: string }[] = [
@@ -24,7 +24,9 @@ const faceModelUrl = 'https://storage.googleapis.com/mediapipe-models/face_landm
 const bundledModelUrls = import.meta.glob<string>('/src/assets/models/*.vrm', { eager: true, query: '?url', import: 'default' })
 const bundledModels: ModelOption[] = Object.entries(bundledModelUrls).map(([path, url]) => {
   const file = path.split('/').pop() ?? 'VRM model'
-  return { id: path, name: file.replace(/\.vrm$/i, '').replaceAll('_', ' '), url }
+  const stem = file.replace(/\.vrm$/i, '')
+  const gender = stem === 'AvatarSample_C' ? '男性' : stem === 'AvatarSample_A' ? '女性' : ''
+  return { id: path, name: `${stem.replaceAll('_', ' ')}${gender ? `（${gender}）` : ''}`, url }
 })
 
 function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)) }
@@ -59,7 +61,6 @@ export default function App() {
   const stageRef = useRef<HTMLDivElement>(null)
   const colorCanvasRef = useRef<HTMLCanvasElement>(null)
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
   const landmarkerRef = useRef<FaceLandmarker | null>(null)
   const threeSceneRef = useRef<THREE.Scene | null>(null)
   const avatarRef = useRef<LoadedAvatar | null>(null)
@@ -78,7 +79,7 @@ export default function App() {
   const [faceDepth, setFaceDepth] = useState<number | null>(null)
   const [faceYaw, setFaceYaw] = useState<number | null>(null)
   const [faceRoll, setFaceRoll] = useState<number | null>(null)
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>(bundledModels)
+  const [readyModelIds, setReadyModelIds] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState('')
   const [modelName, setModelName] = useState(bundledModels[0]?.name ?? 'アバターを選択してください')
   const [error, setError] = useState('')
@@ -217,7 +218,7 @@ export default function App() {
         const avatarScene = loaded.vrm.scene
         avatarScene.scale.setScalar(scale)
         avatarScene.rotation.order = 'YXZ'
-        avatarScene.rotation.set(pose.pitch, pose.yaw, pose.roll)
+        avatarScene.rotation.set(pose.pitch, loaded.baseYaw + pose.yaw, pose.roll)
         const offset = loaded.center.clone().multiplyScalar(scale).applyEuler(avatarScene.rotation)
         const centerX = frame ? ((pose.x * frame.width - frame.ppx) / frame.fx) * overlayDepth + overlayDepth * 0.015 : (pose.x - 0.485) * overlayDepth
         const centerY = frame ? -((pose.y * frame.height - frame.ppy) / frame.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
@@ -254,23 +255,28 @@ export default function App() {
     setError('')
   }, [])
 
-  const loadModelBuffer = useCallback(async (id: string, name: string, buffer: ArrayBuffer) => {
+  const loadModelBuffer = useCallback(async (id: string, name: string, buffer: ArrayBuffer, activate = true) => {
     const cached = avatarCacheRef.current.get(id)
     if (cached) {
-      activateModel(id, name)
+      if (activate) activateModel(id, name)
       return
     }
     const pending = pendingModelLoadsRef.current.get(id)
     if (pending) {
       await pending
-      activateModel(id, name)
+      if (activate) {
+        if (!avatarCacheRef.current.has(id)) throw new Error('VRMモデルの事前読み込みに失敗しました。')
+        activateModel(id, name)
+      }
       return
     }
     let finishLoad = () => {}
     const loadLock = new Promise<void>((resolve) => { finishLoad = resolve })
     pendingModelLoadsRef.current.set(id, loadLock)
-    setBusy(true)
-    setError('')
+    if (activate) {
+      setBusy(true)
+      setError('')
+    }
     try {
       const loader = new GLTFLoader()
       loader.register((parser) => new VRMLoaderPlugin(parser))
@@ -311,38 +317,29 @@ export default function App() {
       const box = new THREE.Box3()
       for (const object of anchorMeshes) box.expandByObject(object)
       if (box.isEmpty()) throw new Error('モデルの顔メッシュを見つけられませんでした。')
-      const center = box.getCenter(new THREE.Vector3())
+      const center = vrm.scene.worldToLocal(box.getCenter(new THREE.Vector3()))
       const size = box.getSize(new THREE.Vector3())
-      const model = { vrm, box, center, width: Math.max(size.x, 0.001) }
-      if (avatarRef.current) avatarRef.current.vrm.scene.visible = false
+      const model = { vrm, box, center, width: Math.max(size.x, 0.001), baseYaw: vrm.scene.rotation.y }
       threeScene.add(vrm.scene)
       avatarCacheRef.current.set(id, model)
-      avatarRef.current = model
-      vrm.scene.visible = Boolean(trackingRef.current?.depthMeters)
-      setSelectedModel(id)
-      setModelName(name)
-      setError('')
+      setReadyModelIds((current) => current.includes(id) ? current : [...current, id])
+      if (activate) {
+        if (avatarRef.current) avatarRef.current.vrm.scene.visible = false
+        avatarRef.current = model
+        vrm.scene.visible = Boolean(trackingRef.current?.depthMeters)
+        setSelectedModel(id)
+        setModelName(name)
+        setError('')
+      }
     } catch (cause) {
       console.error(cause)
-      setError(cause instanceof Error ? cause.message : 'VRMファイルを読み込めませんでした。')
+      if (activate) setError(cause instanceof Error ? cause.message : 'VRMファイルを読み込めませんでした。')
     } finally {
-      setBusy(false)
+      if (activate) setBusy(false)
       finishLoad()
       if (pendingModelLoadsRef.current.get(id) === loadLock) pendingModelLoadsRef.current.delete(id)
     }
   }, [activateModel])
-
-  const loadModel = useCallback(async (file: File) => {
-    const id = `local:${file.name}:${file.size}:${file.lastModified}`
-    const name = file.name.replace(/\.vrm$/i, '')
-    try {
-      await loadModelBuffer(id, name, await file.arrayBuffer())
-      setModelOptions((current) => current.some((item) => item.id === id) ? current : [...current, { id, name }])
-    } catch (cause) {
-      console.error(cause)
-      setError('VRMファイルを読み込めませんでした。')
-    }
-  }, [loadModelBuffer])
 
   const loadBundledModel = useCallback(async (model: ModelOption) => {
     const cached = avatarCacheRef.current.get(model.id)
@@ -371,10 +368,37 @@ export default function App() {
     }
   }, [activateModel, loadModelBuffer])
 
+  const preloadBundledModel = useCallback(async (model: ModelOption) => {
+    if (avatarCacheRef.current.has(model.id) || !model.url) return
+    try {
+      let bufferPromise = bundledBuffersRef.current.get(model.id)
+      if (!bufferPromise) {
+        bufferPromise = fetch(model.url).then((response) => {
+          if (!response.ok) throw new Error(`モデルを取得できませんでした (${response.status})`)
+          return response.arrayBuffer()
+        })
+        bundledBuffersRef.current.set(model.id, bufferPromise)
+      }
+      await loadModelBuffer(model.id, model.name, await bufferPromise, false)
+    } catch (cause) {
+      console.warn(`VRM preload failed: ${model.name}`, cause)
+      bundledBuffersRef.current.delete(model.id)
+    }
+  }, [loadModelBuffer])
+
   useEffect(() => {
-    const firstModel = bundledModels[0]
-    if (firstModel) void loadBundledModel(firstModel)
-  }, [loadBundledModel])
+    let cancelled = false
+    const prepareModels = async () => {
+      const [firstModel, ...remainingModels] = bundledModels
+      if (firstModel) await loadBundledModel(firstModel)
+      for (const model of remainingModels) {
+        if (cancelled) return
+        await preloadBundledModel(model)
+      }
+    }
+    void prepareModels()
+    return () => { cancelled = true }
+  }, [loadBundledModel, preloadBundledModel])
 
   useEffect(() => {
     const colorCanvas = colorCanvasRef.current
@@ -560,16 +584,13 @@ export default function App() {
           <div className="section-kicker"><span>03</span> アバターモデル</div>
           <div className="model-label">表示するモデル <span>VRM 0.x / 1.0</span></div>
           <div className="model-card"><span className="model-token">◉</span><span className="model-select-wrap"><select className="model-select" aria-label="表示するモデル" value={selectedModel} disabled={busy} onChange={(event) => {
-            const model = modelOptions.find((item) => item.id === event.target.value)
+            const model = bundledModels.find((item) => item.id === event.target.value)
             if (!model) return
-            if (model.url) void loadBundledModel(model)
-            else activateModel(model.id, model.name)
+            void loadBundledModel(model)
           }}>
             <option value="" disabled>モデルを選択</option>
-            {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+            {bundledModels.map((model) => <option key={model.id} value={model.id}>{model.name}{readyModelIds.includes(model.id) ? ' · 準備済み' : ' · 準備中'}</option>)}
           </select><small>{busy ? 'モデルを読み込み中…' : avatarRef.current ? `${modelName} · ローカルに読み込み済み` : 'VRMモデルライブラリ'}</small></span><span className="model-type">VRM</span></div>
-          <input ref={fileRef} className="file-input" type="file" accept=".vrm,model/gltf-binary,application/octet-stream" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadModel(file); event.currentTarget.value = '' }} />
-          <button className="add-model" onClick={() => fileRef.current?.click()}>＋ VRMをライブラリに追加</button>
         </div>
 
         <div className="setup-section work-section">

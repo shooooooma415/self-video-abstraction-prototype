@@ -15,7 +15,7 @@
 
 ## 顔アバター
 
-Three.js と three-vrm で VRM モデルを 3D 表示し、Face Landmarker の3D顔変換行列と blendshape で顔の向き・まばたき・口の動きを反映します。位置と大きさは D415 の深度・カメラ内部パラメーターで合わせます。内蔵の AvatarSample_A を起動時に読み込み、モデル選択メニューから切り替えられます。追加モデルは `src/assets/models/` に `.vrm` を置くとモデル一覧に追加されます。個別ファイルは「VRMをライブラリに追加」から読み込めます。読み込んだモデルはメモリに保持し、切り替え時に再解析しません。
+Three.js と three-vrm で VRM モデルを 3D 表示し、Face Landmarker の3D顔変換行列と blendshape で顔の向き・まばたき・口の動きを反映します。位置と大きさは D415 の深度・カメラ内部パラメーターで合わせます。AvatarSample_A（女性）とAvatarSample_C（男性）の2体を同梱し、起動時に順番に読み込んでモデル選択メニューから切り替えられます。読み込んだモデルはメモリに保持し、切り替え時に再解析しません。モデル別の利用条件は [third_party/AvatarSample_A_LICENSE.md](third_party/AvatarSample_A_LICENSE.md) と [third_party/AvatarSample_C_LICENSE.md](third_party/AvatarSample_C_LICENSE.md) を参照してください。
 
 RealSense D415 の RGB 映像と深度フレームは `npm run depth:bridge` のローカルブリッジから取得します。ブリッジはカラー座標に整列した深度とカメラ内部パラメーターを返し、鼻位置の近傍深度からアバターの実距離・投影サイズを計算します。深度ブリッジ未接続時は、奥行きに合わせたアバター表示を行いません。
 
