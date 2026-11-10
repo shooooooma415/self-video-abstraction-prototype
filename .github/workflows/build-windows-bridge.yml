@@ -1,0 +1,93 @@
+name: Build Windows D415 bridge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'native/realsense_depth_bridge.cpp'
+      - '.github/workflows/build-windows-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out this project
+        uses: actions/checkout@v4
+
+      - name: Check out librealsense
+        uses: actions/checkout@v4
+        with:
+          repository: realsenseai/librealsense
+          ref: v2.58.1
+          path: third_party/librealsense
+          submodules: recursive
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure librealsense
+        shell: pwsh
+        run: >-
+          cmake -S third_party/librealsense -B build/librealsense -A x64
+          -DBUILD_SHARED_LIBS=ON
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_GRAPHICAL_EXAMPLES=OFF
+          -DBUILD_TOOLS=OFF
+          -DBUILD_UNIT_TESTS=OFF
+          -DBUILD_VIEWER_TESTS=OFF
+          -DBUILD_ROSBAG2=OFF
+          -DCHECK_FOR_UPDATES=OFF
+          -DENABLE_CCACHE=OFF
+
+      - name: Build librealsense
+        shell: pwsh
+        run: cmake --build build/librealsense --config Release --target realsense2 --parallel 4
+
+      - name: Build and package the bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkBuild = Join-Path $env:GITHUB_WORKSPACE 'build\librealsense'
+          $sdkSource = Join-Path $env:GITHUB_WORKSPACE 'third_party\librealsense'
+          $releaseFiles = Get-ChildItem $sdkBuild -Recurse -File | Where-Object { $_.Directory.Name -eq 'Release' }
+          $sdkLibrary = $releaseFiles | Where-Object { $_.Name -eq 'realsense2.lib' } | Select-Object -First 1
+          $sdkRuntime = $releaseFiles | Where-Object { $_.Name -eq 'realsense2.dll' } | Select-Object -First 1
+          if (-not $sdkLibrary -or -not $sdkRuntime) {
+            throw 'The librealsense build did not produce realsense2.lib and realsense2.dll.'
+          }
+
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE 'build\windows-d415-bridge-x64'
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          $bridgeExe = Join-Path $packageDir 'realsense-depth-bridge.exe'
+          $bridgeSource = Join-Path $env:GITHUB_WORKSPACE 'native\realsense_depth_bridge.cpp'
+          & cl.exe /nologo /std:c++17 /O2 /EHsc /MT "/I$(Join-Path $sdkSource 'include')" $bridgeSource "/Fe:$bridgeExe" `
+            /link "/LIBPATH:$($sdkLibrary.DirectoryName)" realsense2.lib ws2_32.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item $sdkRuntime.FullName (Join-Path $packageDir 'realsense2.dll')
+          @'
+          Windows D415 depth bridge
+
+          1. Install the RealSense SDK on Windows to install the camera driver.
+          2. Connect the D415 to a USB 3 port.
+          3. Run realsense-depth-bridge.exe and leave this window open.
+          4. Open https://self-video-abstraction-prototype.vercel.app in Chrome and press Connect.
+          5. Allow the browser's local network access prompt if it appears.
+
+          Stop the bridge with Ctrl+C. This folder includes the librealsense runtime DLL.
+          '@ | Set-Content -Encoding utf8 (Join-Path $packageDir 'README.txt')
+          Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath (Join-Path $env:GITHUB_WORKSPACE 'build\windows-d415-bridge-x64.zip') -Force
+
+      - name: Upload the downloadable bridge package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-d415-bridge-x64
+          path: build/windows-d415-bridge-x64.zip
+          if-no-files-found: error
+          retention-days: 90
