@@ -73,9 +73,13 @@
 
    1. [RealSense SDKのReleasesページ](https://github.com/realsenseai/librealsense/releases)を開き、最新の安定版リリース（Beta表記のないもの）の **Assets** を展開します。Windows用インストーラー（`RealSense.SDK-WIN10-バージョン.exe` 形式）をダウンロードします。ファイル名はSDKのバージョンによって変わります。
    2. ダウンロードした`.exe`を実行し、Windowsのユーザーアカウント制御が表示されたら許可します。ライセンスに同意し、インストール先は通常そのままで進めます。RealSense ViewerとSDKの開発用ファイルが含まれる構成でインストールします。標準のインストール先は`C:\Program Files (x86)\Intel RealSense SDK 2.0`です。
-   3. Visual Studio 2019以降をインストールし、ワークロード「C++によるデスクトップ開発」を選びます。これはブリッジをC++でビルドするために必要です。
+   3. Visual Studio 2019以降のC++ビルド環境を追加します。
+      - スタートメニューで **Visual Studio Installer** を検索して開きます。まだVisual Studioがない場合はVisual Studio Communityをインストールし、セットアップ画面で同じワークロードを選びます。
+      - すでにVisual Studioがある場合は、対象のエディション（Communityなど）の **変更 / Modify** を押します。
+      - **ワークロード / Workloads** タブで **C++によるデスクトップ開発 / Desktop development with C++** のチェックボックスをオンにします。
+      - 右下の **変更 / Modify**（新規インストール中なら **インストール / Install**）を押し、管理者確認が出たら許可します。インストール完了まで待ちます。
    4. D415をUSB 3ポートに接続し、スタートメニューから **Intel RealSense Viewer** を起動します。デバイス一覧にD415が出たら深度・カラーのストリームを開始し、映像が表示されることを確認してViewerを閉じます。
-   5. Visual Studioの **Developer PowerShell** を起動し、リポジトリのフォルダーに移動してブリッジを起動します。初回はC++ブリッジをビルドします。
+   5. スタートメニューで **Developer PowerShell for VS 2022**（使用中のVisual Studioのバージョン名）を検索して開きます。Visual Studio本体から開く場合は、メニューの **ツール / Tools → コマンドライン / Command Line → Developer PowerShell** を選びます。そこからリポジトリのフォルダーに移動してブリッジを起動します。初回はC++ブリッジをビルドします。
 
       ```powershell
       npm install
