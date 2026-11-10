@@ -66,10 +66,11 @@ bool sendAll(int socket, const void* bytes, size_t length) {
 }
 
 bool originAllowed(const std::string& origin) {
-  static const std::array<std::string, 8> allowed = {
+  static const std::array<std::string, 9> allowed = {
       "http://localhost:3000", "http://localhost:5173", "http://localhost:5174",
       "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://127.0.0.1:5174",
-      "http://localhost", "http://127.0.0.1"};
+      "http://localhost", "http://127.0.0.1",
+      "https://self-video-abstraction-prototype.vercel.app"};
   for (const auto& value : allowed) if (origin == value) return true;
   return origin.empty();
 }

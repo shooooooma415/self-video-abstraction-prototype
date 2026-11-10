@@ -5,8 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
 import './prototype.css'
 
-type Condition = 'hidden' | 'original' | 'avatar' | 'adaptive'
-type WorkState = 'working' | 'switching' | 'resting'
+type Condition = 'hidden' | 'original' | 'avatar'
 type DepthFrame = { width: number; height: number; depthScale: number; fx: number; fy: number; ppx: number; ppy: number; pixels: Uint16Array; color: Uint8Array; colorStride: number }
 type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
 type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseYaw: number }
@@ -17,7 +16,6 @@ const conditions: { id: Condition; number: string; title: string; description: s
   { id: 'hidden', number: '01', title: '非表示', description: '自己表示なし' },
   { id: 'original', number: '02', title: '実写映像', description: '映像を表示' },
   { id: 'avatar', number: '03', title: '通常アバター', description: '顔の動きに連動' },
-  { id: 'adaptive', number: '04', title: '状態反映アバター', description: '作業状態を表示' },
 ]
 
 const wasmUrl = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm'
@@ -31,6 +29,13 @@ const bundledModels: ModelOption[] = Object.entries(bundledModelUrls).map(([path
 })
 
 function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)) }
+
+function fetchDepthBridge(url: string) {
+  return fetch(url, {
+    cache: 'no-store',
+    targetAddressSpace: 'loopback',
+  } as RequestInit & { targetAddressSpace: 'loopback' })
+}
 
 function sampleDepth(frame: DepthFrame, normalizedX: number, normalizedY: number): number | null {
   const centerX = Math.round(clamp(normalizedX, 0, 1) * (frame.width - 1))
@@ -73,9 +78,7 @@ export default function App() {
   const trackingRef = useRef<Tracking | null>(null)
   const depthFrameRef = useRef<DepthFrame | null>(null)
   const conditionRef = useRef<Condition>('avatar')
-  const workStateRef = useRef<WorkState>('working')
   const [condition, setCondition] = useState<Condition>('avatar')
-  const [workState, setWorkState] = useState<WorkState>('working')
   const [cameraOn, setCameraOn] = useState(false)
   const [tracking, setTracking] = useState(false)
   const [depthConnected, setDepthConnected] = useState(false)
@@ -90,15 +93,13 @@ export default function App() {
   const [pipSupported] = useState(() => typeof window !== 'undefined' && 'documentPictureInPicture' in window)
 
   useEffect(() => { conditionRef.current = condition }, [condition])
-  useEffect(() => { workStateRef.current = workState }, [workState])
-
   useEffect(() => {
     if (!cameraOn) return
     let cancelled = false
     let timer = 0
     const pollDepth = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8090/depth', { cache: 'no-store' })
+        const response = await fetchDepthBridge('http://127.0.0.1:8090/depth')
         if (!response.ok) throw new Error('Depth bridge unavailable')
         const buffer = await response.arrayBuffer()
         const view = new DataView(buffer)
@@ -204,10 +205,10 @@ export default function App() {
       const pose = trackingRef.current
       const hasDepthPose = Boolean(pose && pose.depthMeters)
       if (loaded) {
-        const avatarVisible = Boolean(hasDepthPose && (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive'))
+        const avatarVisible = Boolean(hasDepthPose && conditionRef.current === 'avatar')
         loaded.vrm.scene.visible = avatarVisible
       }
-      if (loaded && pose && pose.depthMeters && (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive')) {
+      if (loaded && pose && pose.depthMeters && conditionRef.current === 'avatar') {
         const depth = pose.depthMeters
         const overlayDepth = Math.max(depth - 0.02, 0.03)
         const frame = depthFrameRef.current
@@ -228,13 +229,9 @@ export default function App() {
         const centerY = frame ? -((pose.y * frame.height - frame.ppy) / frame.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
         avatarScene.position.set(centerX - offset.x, centerY - offset.y, -overlayDepth - offset.z)
 
-        const isAdaptive = conditionRef.current === 'adaptive'
-        const tired = isAdaptive && workStateRef.current === 'resting' ? 0.65 : isAdaptive && workStateRef.current === 'switching' ? 0.22 : 0
         const expressions = loaded.vrm.expressionManager
-        expressions?.setValue('blink', clamp(Math.max(pose.blink, tired * 0.8), 0, 1))
-        expressions?.setValue('aa', clamp(Math.max(pose.mouth, tired * 0.1), 0, 1))
-        expressions?.setValue('sad', tired)
-        expressions?.setValue('relaxed', isAdaptive && workStateRef.current === 'resting' ? 0.35 : 0)
+        expressions?.setValue('blink', clamp(pose.blink, 0, 1))
+        expressions?.setValue('aa', clamp(pose.mouth, 0, 1))
         loaded.vrm.update(delta)
       }
       renderer.render(scene, camera)
@@ -506,7 +503,7 @@ export default function App() {
   const startCamera = async () => {
     setError('')
     try {
-      const response = await fetch('http://127.0.0.1:8090/health', { cache: 'no-store' })
+      const response = await fetchDepthBridge('http://127.0.0.1:8090/health')
         .catch(() => { throw new Error('RealSense depth bridge is not available') })
       if (!response.ok) throw new Error('RealSense depth bridge is not available')
       if (!landmarkerRef.current) {
@@ -585,7 +582,7 @@ export default function App() {
             context.translate(canvas.width, 0)
             context.scale(-1, 1)
             context.drawImage(colorCanvas, 0, 0, canvas.width, canvas.height)
-            if (conditionRef.current === 'avatar' || conditionRef.current === 'adaptive') {
+            if (conditionRef.current === 'avatar') {
               const avatarCanvas = avatarCanvasRef.current
               if (avatarCanvas?.width && avatarCanvas.height) context.drawImage(avatarCanvas, 0, 0, canvas.width, canvas.height)
             }
@@ -647,15 +644,6 @@ export default function App() {
           </select><small>{busy ? 'モデルを読み込み中…' : avatarRef.current ? `${modelName} · ローカルに読み込み済み` : 'VRMモデルライブラリ'}</small></span><span className="model-type">VRM</span></div>
         </div>
 
-        <div className="setup-section work-section">
-          <div className="section-kicker"><span>04</span> 作業状態</div>
-          <div className="work-state-buttons" role="group" aria-label="作業状態">
-            <button className={workState === 'working' ? 'chosen' : ''} onClick={() => setWorkState('working')}>✦ 作業中</button>
-            <button className={workState === 'switching' ? 'chosen' : ''} onClick={() => setWorkState('switching')}>▶ 気分転換</button>
-            <button className={workState === 'resting' ? 'chosen' : ''} onClick={() => setWorkState('resting')}>◌ 休憩中</button>
-          </div>
-          <small className="section-hint">条件04のアバターに作業状態が反映されます</small>
-        </div>
         <div className="privacy-note"><span>✥</span><div><b>プライバシーを大切に</b><small>映像・顔データは端末内で処理されます。</small></div></div>
       </aside>
 
@@ -663,15 +651,14 @@ export default function App() {
         <div className="preview-heading"><div><div className="eyebrow">リアルタイムプレビュー</div><h2>あなたの作業スペース</h2></div><div className="preview-actions">{pipSupported && <button className="pip-button" onClick={() => void openPictureInPicture()}>小窓で表示</button>}<div className="live-meta"><i className={cameraOn ? 'on' : ''} /> {cameraOn ? 'LIVE PREVIEW' : 'PREVIEW'} <span>│</span> 4:3</div></div></div>
         <div className={`preview-stage ${condition === 'hidden' ? 'is-hidden' : ''}`} ref={stageRef}>
           <canvas ref={colorCanvasRef} className="preview-video" />
-          <canvas ref={avatarCanvasRef} className={`avatar-canvas ${condition === 'avatar' || condition === 'adaptive' ? 'visible' : ''}`} />
+          <canvas ref={avatarCanvasRef} className={`avatar-canvas ${condition === 'avatar' ? 'visible' : ''}`} />
           <span className="frame-corner top-left" /><span className="frame-corner top-right" /><span className="frame-corner bottom-left" /><span className="frame-corner bottom-right" />
           {condition === 'hidden' && <div className="hidden-overlay"><span>◉</span><b>自己映像は非表示です</b><small>カメラと顔トラッキングは継続しています</small></div>}
           {!cameraOn && condition !== 'hidden' && <div className="preview-start"><span>◉</span><b>カメラを接続してプレビューを開始</b><button onClick={() => void startCamera()}>カメラを接続</button></div>}
-          {(condition === 'avatar' || condition === 'adaptive') && cameraOn && !depthConnected && <div className="model-prompt">深度ブリッジを起動すると、D415の距離に合わせて表示します</div>}
+          {condition === 'avatar' && cameraOn && !depthConnected && <div className="model-prompt">深度ブリッジを起動すると、D415の距離に合わせて表示します</div>}
         </div>
         <div className="preview-caption"><span className="caption-index">{activeCondition.number}</span><div className="caption-copy"><b>{activeCondition.title}</b><small>{activeCondition.description}</small></div><span className={`tracking-label ${tracking && depthConnected ? 'on' : ''}`}><i />{tracking && depthConnected ? `顔・深度を追跡中 · ${faceDepth ? `${faceDepth.toFixed(2)} m` : '距離未取得'}${faceYaw === null ? '' : ` · 向き ${Math.round(faceYaw * 180 / Math.PI)}°`}${faceRoll === null ? '' : ` · 傾き ${Math.round(faceRoll * 180 / Math.PI)}°`}` : '顔・深度の接続待ち'}</span></div>
-        <div className={`progress-bars ${condition === 'adaptive' ? 'adaptive' : ''}`}><i /><i /><i /></div>
-        <div className="condition-message"><span>✦</span><span>条件{activeCondition.number}では{condition === 'adaptive' ? '作業状態に応じてアバターの表情やポーズが変化します。' : '顔の動きに合わせてアバターが追従します。'}</span></div>
+        <div className="condition-message"><span>✦</span><span>条件{activeCondition.number}では顔の動きに合わせてアバターが追従します。</span></div>
       </section>
     </section>
     <footer className="attention-footer"><span>SELF ATTENTION SUPPORT SYSTEM</span><span>LOCAL PROTOTYPE · 2026</span></footer>

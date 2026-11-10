@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>自己映像表示プロトタイプ — アーキテクチャ</title>
+<style>
+:root{color-scheme:light dark;--paper:#f5f7fb;--ink:#18243a;--muted:#65738a;--grid:#dce3ee;--panel:#fff;--stroke:#cad5e3;--blue:#315fca;--mint:#238b78;--violet:#7656c8;--orange:#c3792e;--pale-blue:#edf2ff;--pale-mint:#eaf6f2;--pale-violet:#f2effb;--pale-orange:#fbf3e9;--shadow:0 12px 32px #1c33520d}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Noto Sans JP",Meiryo,sans-serif}.page{max-width:1500px;margin:auto;padding:36px clamp(16px,4vw,64px) 28px}.eyebrow{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;color:var(--blue)}h1{font-size:clamp(26px,3vw,38px);letter-spacing:-.035em;margin:9px 0 7px}.subtitle{margin:0;color:var(--muted);font-size:14px;line-height:1.7}.canvas{margin-top:26px;border:1px solid var(--stroke);border-radius:14px;overflow:hidden;background-color:var(--panel);background-image:radial-gradient(var(--grid) .75px,transparent .75px);background-size:22px 22px;box-shadow:var(--shadow)}svg{display:block;width:100%;height:auto;min-width:900px}.diagram-wrap{overflow-x:auto}.legend{display:flex;flex-wrap:wrap;gap:12px 24px;padding:16px 20px;border-top:1px solid var(--stroke);font-size:12px;color:var(--muted);background:var(--panel)}.key{display:flex;align-items:center;gap:8px}.swatch{width:24px;height:0;border-top:2px solid var(--blue)}.swatch.dashed{border-color:var(--muted);border-top-style:dashed}.note{margin:16px 2px 0;color:var(--muted);font-size:12px;line-height:1.7}.foot{margin-top:20px;display:flex;justify-content:space-between;gap:20px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}.group{fill:var(--panel);fill-opacity:.72;stroke:var(--stroke);stroke-width:1.4}.group-title{font-size:13px;font-weight:700;fill:var(--ink)}.group-sub{font-size:10px;fill:var(--muted);font-family:ui-monospace,Menlo,monospace}.card{fill:var(--panel);stroke:var(--stroke);stroke-width:1.2;filter:drop-shadow(0px 3px 6px #26375412)}.card-title{font-size:13px;font-weight:700;fill:var(--ink)}.card-sub{font-size:10px;fill:var(--muted)}.tag{font-size:9px;font-family:ui-monospace,Menlo,monospace;fill:var(--muted)}.arrow{fill:none;stroke:var(--blue);stroke-width:2.3;marker-end:url(#arr)}.arrow-mint{fill:none;stroke:var(--mint);stroke-width:2.3;marker-end:url(#arrm)}.arrow-violet{fill:none;stroke:var(--violet);stroke-width:2.1;marker-end:url(#arrv)}.arrow-dashed{fill:none;stroke:var(--muted);stroke-width:1.6;stroke-dasharray:6 5;marker-end:url(#arrn)}.label-bg{fill:var(--panel);opacity:.95}.edge-label{font:10px ui-monospace,Menlo,monospace;fill:var(--muted)}.icon-blue{stroke:var(--blue)}.icon-mint{stroke:var(--mint)}.icon-violet{stroke:var(--violet)}.icon-orange{stroke:var(--orange)}.pill{fill:var(--pale-blue);stroke:none}.pill-text{fill:var(--blue);font:9px ui-monospace,Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{--paper:#111722;--ink:#e7edf8;--muted:#9aa9bd;--grid:#283345;--panel:#182130;--stroke:#344257;--blue:#8baaff;--mint:#6ad2b6;--violet:#b8a1fa;--orange:#e6aa69;--pale-blue:#263352;--pale-mint:#1f3c39;--pale-violet:#322d49;--pale-orange:#423526;--shadow:0 12px 32px #0003}.card{filter:drop-shadow(0px 3px 6px #0005)}}
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="eyebrow">SYSTEM ARCHITECTURE · LOCAL PROTOTYPE</div>
+  <h1>自己映像表示・偶奇判定プロトタイプ</h1>
+  <p class="subtitle">カメラ表示と実験課題は独立したブラウザーアプリ。RealSense の深度データだけがローカル HTTP ブリッジ経由でカメラアプリに届きます。</p>
+  <section class="canvas" aria-label="システムアーキテクチャ図">
+  <div class="diagram-wrap">
+  <svg viewBox="0 0 1440 890" role="img" aria-labelledby="title desc">
+  <title id="title">自己映像表示プロトタイプのシステム構成</title><desc id="desc">Chromeのカメラアプリと課題アプリ、RealSense深度ブリッジ、MediaPipe配信元、VRMモデルの関係を示す図。</desc>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1l7 4-7 4" fill="none" stroke="var(--blue)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="arrm" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1l7 4-7 4" fill="none" stroke="var(--mint)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="arrv" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1l7 4-7 4" fill="none" stroke="var(--violet)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="arrn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1l7 4-7 4" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <!-- outer runtime -->
+  <rect class="group" x="35" y="36" width="1010" height="806" rx="14"/>
+  <text class="group-title" x="58" y="68">利用者の端末</text><text class="group-sub" x="58" y="86">LOCAL MACHINE · CHROME + NODE.JS</text>
+  <!-- browser box -->
+  <rect class="group" x="68" y="112" width="938" height="458" rx="12"/>
+  <text class="group-title" x="91" y="143">Chrome · ブラウザー内処理</text><text class="group-sub" x="779" y="143">CAMERA APP :5173  /  TASK APP :5174</text>
+  <!-- camera app -->
+  <rect class="group" x="91" y="164" width="566" height="380" rx="10" style="stroke:var(--blue)"/>
+  <rect class="pill" x="111" y="177" width="133" height="22" rx="11"/><text class="pill-text" x="122" y="192">CAMERA APP · VITE</text>
+  <!-- input camera -->
+  <rect class="card" x="117" y="235" width="142" height="94" rx="9"/>
+  <g class="icon-blue" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="155" y="249" width="65" height="41" rx="5"/><path d="M220 261l18-10v37l-18-10zM164 298h46"/></g>
+  <text class="card-title" x="188" y="311" text-anchor="middle">カメラ映像</text><text class="card-sub" x="188" y="324" text-anchor="middle">D415 RGB · ブリッジ経由</text>
+  <!-- face tracking -->
+  <rect class="card" x="291" y="220" width="165" height="104" rx="9"/>
+  <g class="icon-mint" fill="none" stroke-width="2" stroke-linecap="round"><path d="M374 237c-15 0-24 12-24 27v9c0 15 9 25 24 25s24-10 24-25v-9c0-15-9-27-24-27z"/><path d="M360 266h5m18 0h5m-20 17q6 6 12 0M339 260l9 3m51-3-9 3"/></g>
+  <text class="card-title" x="373" y="310" text-anchor="middle">顔ランドマーク</text><text class="card-sub" x="373" y="323" text-anchor="middle">MediaPipe Tasks Vision</text>
+  <!-- avatar -->
+  <rect class="card" x="488" y="220" width="144" height="104" rx="9"/>
+  <g class="icon-violet" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M560 237l24 9v17c0 15-10 25-24 31-14-6-24-16-24-31v-17z"/><path d="M550 266q10-10 20 0m-18 9h16m-8-20v10"/></g>
+  <text class="card-title" x="560" y="310" text-anchor="middle">3Dアバター合成</text><text class="card-sub" x="560" y="323" text-anchor="middle">Three.js · three-vrm</text>
+  <!-- main view -->
+  <rect class="card" x="117" y="389" width="270" height="110" rx="9"/>
+  <g class="icon-blue" fill="none" stroke-width="2" stroke-linejoin="round"><rect x="145" y="405" width="63" height="46" rx="5"/><path d="M151 443l16-16 10 9 12-15 13 22"/><path d="M161 462h32"/></g>
+  <text class="card-title" x="279" y="430" text-anchor="middle">自己映像プレビュー</text><text class="card-sub" x="279" y="450" text-anchor="middle">非表示 / 実写 / アバター</text><text class="tag" x="279" y="473" text-anchor="middle">PIP ウィンドウで表示可能</text>
+  <!-- local models -->
+  <rect class="card" x="441" y="389" width="191" height="110" rx="9"/>
+  <g class="icon-violet" fill="none" stroke-width="2" stroke-linejoin="round"><path d="M479 412l22-12 22 12v27l-22 13-22-13z"/><path d="M479 412l22 13 22-13m-22 13v27m-11-33l22 13m11-13-22 13"/></g>
+  <text class="card-title" x="554" y="430" text-anchor="middle">VRMモデル</text><text class="card-sub" x="554" y="450" text-anchor="middle">同梱 / 利用者が追加</text><text class="tag" x="554" y="473" text-anchor="middle">端末メモリに読み込み</text>
+  <!-- task app -->
+  <rect class="group" x="684" y="164" width="295" height="380" rx="10" style="stroke:var(--mint)"/>
+  <rect x="704" y="177" width="142" height="22" rx="11" style="fill:var(--pale-mint)"/><text x="715" y="192" style="fill:var(--mint);font:9px ui-monospace,Menlo,monospace">TASK APP · VITE</text>
+  <rect class="card" x="716" y="235" width="230" height="100" rx="9"/>
+  <g class="icon-mint" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="831" cy="260" r="18"/><path d="M823 260h16m-8-8v16M816 287h30m-24 8h18"/></g>
+  <text class="card-title" x="831" y="314" text-anchor="middle">偶奇判定課題</text><text class="card-sub" x="831" y="328" text-anchor="middle">別タブ · React</text>
+  <rect class="card" x="716" y="382" width="102" height="99" rx="9"/>
+  <g class="icon-mint" fill="none" stroke-width="2" stroke-linejoin="round"><rect x="746" y="398" width="42" height="33" rx="4"/><path d="M754 407h25m-25 7h25m-25 7h16"/></g>
+  <text class="card-title" x="767" y="454" text-anchor="middle">localStorage</text><text class="card-sub" x="767" y="469" text-anchor="middle">試行ログ</text>
+  <rect class="card" x="844" y="382" width="102" height="99" rx="9"/>
+  <g class="icon-mint" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M895 398v34m-12-12 12 12 12-12M878 439h34v18h-34z"/></g>
+  <text class="card-title" x="895" y="472" text-anchor="middle">CSV・JSON</text>
+  <!-- flows inside browser -->
+  <path class="arrow" d="M259 276H286"/><path class="arrow-violet" d="M456 272H483"/>
+  <path class="arrow" d="M372 329V370H252V383"/><path class="arrow-violet" d="M559 329V370H334V383"/>
+  <path class="arrow-violet" d="M536 389V334"/>
+  <path class="arrow-mint" d="M831 335V366H767V376"/><path class="arrow-mint" d="M818 432H837"/>
+  <path class="arrow-dashed" d="M632 440H676V300H709"/>
+  <rect class="label-bg" x="653" y="349" width="79" height="17" rx="4"/><text class="edge-label" x="692" y="361" text-anchor="middle">手動で条件同期</text>
+  <!-- local bridge / device -->
+  <rect class="group" x="68" y="608" width="938" height="204" rx="12"/>
+  <text class="group-title" x="91" y="638">ローカルデバイス連携</text><text class="group-sub" x="783" y="638">USB · HTTP LOOPBACK</text>
+  <rect class="card" x="117" y="674" width="190" height="99" rx="9"/>
+  <g class="icon-orange" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="170" y="690" width="83" height="45" rx="7"/><circle cx="211" cy="712" r="14"/><circle cx="211" cy="712" r="7"/><path d="M188 744h47m-36 0 5 9h19l5-9"/></g>
+  <text class="card-title" x="212" y="757" text-anchor="middle">RealSense D415</text><text class="card-sub" x="212" y="770" text-anchor="middle">RGB + 深度センサー</text>
+  <rect class="card" x="414" y="674" width="244" height="99" rx="9"/>
+  <g class="icon-orange" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M463 696h35v32h-35zM472 688h35v32M481 680h35v32"/><path d="M468 738h44m-39 7h34"/></g>
+  <text class="card-title" x="554" y="718" text-anchor="middle">深度ブリッジ</text><text class="card-sub" x="554" y="738" text-anchor="middle">C++ · librealsense</text><text class="tag" x="554" y="756" text-anchor="middle">127.0.0.1:8090 · /health /depth</text>
+  <rect class="card" x="742" y="674" width="204" height="99" rx="9"/>
+  <g class="icon-blue" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M792 696h49v33h-49zM801 705h31m-31 8h24m-24 8h16"/><path d="M812 738v9m-12 0h24"/></g>
+  <text class="card-title" x="844" y="718" text-anchor="middle">ブラウザー処理</text><text class="card-sub" x="844" y="738" text-anchor="middle">深度・内部パラメーター</text><text class="tag" x="844" y="756" text-anchor="middle">顔位置の距離・投影サイズ</text>
+  <path class="arrow-mint" d="M307 724H406"/><rect class="label-bg" x="327" y="701" width="61" height="17" rx="4"/><text class="edge-label" x="357" y="713" text-anchor="middle">USB / SDK</text>
+  <path class="arrow" d="M658 724H734"/><rect class="label-bg" x="669" y="701" width="55" height="17" rx="4"/><text class="edge-label" x="696" y="713" text-anchor="middle">HTTP GET</text>
+  <path class="arrow" d="M844 674V584H188V336"/><rect class="label-bg" x="653" y="574" width="112" height="17" rx="4"/><text class="edge-label" x="709" y="586" text-anchor="middle">aligned RGB + depth</text>
+  <path class="arrow-violet" d="M830 674V558H660V272H638"/><rect class="label-bg" x="674" y="548" width="150" height="17" rx="4"/><text class="edge-label" x="749" y="560" text-anchor="middle">距離・内部パラメーター</text>
+  <!-- external sources -->
+  <rect class="group" x="1090" y="112" width="308" height="700" rx="12" style="stroke-dasharray:5 5"/>
+  <text class="group-title" x="1115" y="143">外部リソース</text><text class="group-sub" x="1115" y="161">初回読み込み時に取得</text>
+  <rect class="card" x="1122" y="206" width="244" height="126" rx="9"/>
+  <g class="icon-mint" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1244 225c-19 0-31 13-31 31v10c0 17 12 29 31 29s31-12 31-29v-10c0-18-12-31-31-31z"/><path d="M1231 256h6m15 0h6m-23 13q9 8 18 0"/></g>
+  <text class="card-title" x="1244" y="310" text-anchor="middle">MediaPipe</text><text class="card-sub" x="1244" y="325" text-anchor="middle">WASM + Face Landmarker model</text>
+  <rect class="card" x="1122" y="408" width="244" height="126" rx="9"/>
+  <g class="icon-violet" fill="none" stroke-width="2" stroke-linejoin="round"><path d="M1218 436l26-14 26 14v31l-26 15-26-15z"/><path d="M1218 436l26 15 26-15m-26 15v31"/></g>
+  <text class="card-title" x="1244" y="502" text-anchor="middle">VRMアバターファイル</text><text class="card-sub" x="1244" y="519" text-anchor="middle">内蔵モデル / 利用者が選択</text>
+  <rect x="1122" y="624" width="244" height="119" rx="9" style="fill:var(--pale-orange);stroke:var(--stroke)"/>
+  <text class="card-title" x="1244" y="661" text-anchor="middle">データの扱い</text><text class="card-sub" x="1244" y="684" text-anchor="middle">映像・顔特徴・深度は端末内処理</text><text class="card-sub" x="1244" y="703" text-anchor="middle">録画・クラウド送信なし</text><text class="card-sub" x="1244" y="722" text-anchor="middle">実験ログはブラウザー保存・手動出力</text>
+  <path class="arrow-dashed" d="M1244 198V190H512V205"/><rect class="label-bg" x="821" y="181" width="104" height="17" rx="4"/><text class="edge-label" x="873" y="193" text-anchor="middle">WASM + model fetch</text>
+  <path class="arrow-dashed" d="M1244 400V388H548V383"/><rect class="label-bg" x="854" y="379" width="70" height="17" rx="4"/><text class="edge-label" x="889" y="391" text-anchor="middle">local file load</text>
+  </svg>
+  </div>
+  <div class="legend"><span class="key"><i class="swatch"></i>映像・データの流れ</span><span class="key"><i class="swatch dashed"></i>初回取得・手動連携</span><span>青：メインアプリ　緑：実験課題　紫：アバター描画　橙：深度デバイス</span></div>
+  </section>
+  <p class="note">課題アプリとカメラアプリは別タブ・別の Vite サーバーで動作し、条件は実験者が手動で揃えます。図は README と実装に基づくランタイム構成です。</p>
+  <footer class="foot"><span>self-video-abstraction-prototype</span><span>React · Vite · MediaPipe · Three.js · RealSense D415</span></footer>
+</main>
+</body>
+</html>
