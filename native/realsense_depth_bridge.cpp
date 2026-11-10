@@ -1,13 +1,32 @@
-#include <librealsense2/rs.hpp>
-
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using SocketHandle = SOCKET;
+constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
+constexpr int kSocketError = SOCKET_ERROR;
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
+using SocketHandle = int;
+constexpr SocketHandle kInvalidSocket = -1;
+constexpr int kSocketError = -1;
+#endif
 
+#include <librealsense2/rs.hpp>
+
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
@@ -54,15 +73,36 @@ PublishedFrame latestFrame;
 
 void stop(int) { running.store(false); }
 
-bool sendAll(int socket, const void* bytes, size_t length) {
+bool sendAll(SocketHandle socket, const void* bytes, size_t length) {
   const auto* data = static_cast<const uint8_t*>(bytes);
   size_t sent = 0;
   while (sent < length) {
+#ifdef _WIN32
+    const int chunk = static_cast<int>(std::min<size_t>(length - sent, INT_MAX));
+    const int result = ::send(socket, reinterpret_cast<const char*>(data + sent), chunk, 0);
+#else
     const auto result = ::send(socket, data + sent, length - sent, 0);
+#endif
     if (result <= 0) return false;
     sent += static_cast<size_t>(result);
   }
   return true;
+}
+
+void closeSocket(SocketHandle socket) {
+#ifdef _WIN32
+  ::closesocket(socket);
+#else
+  ::close(socket);
+#endif
+}
+
+void shutdownSocket(SocketHandle socket) {
+#ifdef _WIN32
+  ::shutdown(socket, SD_BOTH);
+#else
+  ::shutdown(socket, SHUT_RDWR);
+#endif
 }
 
 bool originAllowed(const std::string& origin) {
@@ -85,7 +125,7 @@ std::string findOrigin(const std::string& request) {
   return request.substr(start, end == std::string::npos ? end : end - start);
 }
 
-void sendResponse(int socket, int status, const std::string& reason,
+void sendResponse(SocketHandle socket, int status, const std::string& reason,
                   const std::string& contentType, const std::string& origin,
                   const void* body, size_t bodyLength) {
   std::string header = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n";
@@ -102,9 +142,13 @@ void sendResponse(int socket, int status, const std::string& reason,
   if (bodyLength) sendAll(socket, body, bodyLength);
 }
 
-void handleClient(int client) {
+void handleClient(SocketHandle client) {
   std::array<char, 4096> buffer{};
+#ifdef _WIN32
+  const int length = ::recv(client, buffer.data(), static_cast<int>(buffer.size() - 1), 0);
+#else
   const auto length = ::recv(client, buffer.data(), buffer.size() - 1, 0);
+#endif
   if (length <= 0) return;
   const std::string request(buffer.data(), static_cast<size_t>(length));
   const std::string origin = findOrigin(request);
@@ -151,21 +195,26 @@ void handleClient(int client) {
 }
 
 void serveHttp() {
-  const int server = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (server < 0) {
+  const SocketHandle server = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (server == kInvalidSocket) {
     std::cerr << "Could not create HTTP socket\n";
     running.store(false);
     return;
   }
   int reuse = 1;
+#ifdef _WIN32
+  ::setsockopt(server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#else
   ::setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = htons(kPort);
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0 || ::listen(server, 4) < 0) {
+  if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == kSocketError ||
+      ::listen(server, 4) == kSocketError) {
     std::cerr << "Could not listen on 127.0.0.1:" << kPort << "; is the port already in use?\n";
-    ::close(server);
+    closeSocket(server);
     running.store(false);
     return;
   }
@@ -175,19 +224,33 @@ void serveHttp() {
     FD_ZERO(&readSet);
     FD_SET(server, &readSet);
     timeval timeout{0, 250000};
+#ifdef _WIN32
+    const int ready = ::select(0, &readSet, nullptr, nullptr, &timeout);
+#else
     const int ready = ::select(server + 1, &readSet, nullptr, nullptr, &timeout);
+#endif
     if (ready <= 0) continue;
-    const int client = ::accept(server, nullptr, nullptr);
-    if (client < 0) continue;
+    const SocketHandle client = ::accept(server, nullptr, nullptr);
+    if (client == kInvalidSocket) continue;
     handleClient(client);
-    ::shutdown(client, SHUT_RDWR);
-    ::close(client);
+    shutdownSocket(client);
+    closeSocket(client);
   }
-  ::close(server);
+  closeSocket(server);
 }
 }  // namespace
 
 int main() {
+#ifdef _WIN32
+  WSADATA winsockData{};
+  if (::WSAStartup(MAKEWORD(2, 2), &winsockData) != 0) {
+    std::cerr << "Could not initialize Winsock\n";
+    return 1;
+  }
+  struct WinsockCleanup {
+    ~WinsockCleanup() { ::WSACleanup(); }
+  } winsockCleanup;
+#endif
   std::signal(SIGINT, stop);
   std::signal(SIGTERM, stop);
   std::thread server;
@@ -248,7 +311,11 @@ int main() {
     running.store(false);
     if (server.joinable()) server.join();
     std::cerr << "RealSense error: " << error.what() << "\n";
+#ifdef _WIN32
+    std::cerr << "On Windows, allow desktop apps to access the camera in Privacy & security settings.\n";
+#else
     std::cerr << "On macOS 12+, librealsense USB access may require running this bridge with sudo.\n";
+#endif
     return 1;
   } catch (const std::exception& error) {
     running.store(false);
