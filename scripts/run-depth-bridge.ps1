@@ -15,7 +15,26 @@ $libraryDir = Join-Path $sdkRoot 'lib\x64'
 $runtimeDll = Join-Path $sdkRoot 'bin\x64\realsense2.dll'
 
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-  throw 'cl.exe was not found. Start PowerShell from the Visual Studio Developer PowerShell or install the C++ build tools.'
+  $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+  if (Test-Path $vswhere) {
+    $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    $developerCommand = if ($vsPath) { Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat' }
+    if ($developerCommand -and (Test-Path $developerCommand)) {
+      $developerEnvironment = & $env:ComSpec /d /c "call `"$developerCommand`" -arch=amd64 -host_arch=amd64 && set"
+      if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the Visual Studio C++ build environment.' }
+      foreach ($entry in $developerEnvironment) {
+        $separator = $entry.IndexOf('=')
+        if ($separator -gt 0) {
+          $name = $entry.Substring(0, $separator)
+          $value = $entry.Substring($separator + 1)
+          Set-Item -Path "Env:$name" -Value $value
+        }
+      }
+    }
+  }
+}
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+  throw 'cl.exe was not found. Install Build Tools for Visual Studio with the Desktop development with C++ workload.'
 }
 if (-not (Test-Path (Join-Path $includeDir 'librealsense2\rs.hpp')) -or
     -not (Test-Path (Join-Path $libraryDir 'realsense2.lib')) -or

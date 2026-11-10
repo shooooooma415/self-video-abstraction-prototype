@@ -78,7 +78,7 @@
       - **ワークロード / Workloads** タブで **C++によるデスクトップ開発 / Desktop development with C++** のチェックボックスをオンにします。
       - 右下の **変更 / Modify**（新規インストール中なら **インストール / Install**）を押し、管理者確認が出たら許可します。インストール完了まで待ちます。
    4. D415をUSB 3ポートに接続し、スタートメニューから **Intel RealSense Viewer** を起動します。デバイス一覧にD415が出たら深度・カラーのストリームを開始し、映像が表示されることを確認してViewerを閉じます。
-   5. スタートメニューで **Developer PowerShell for VS**（インストールしたバージョン名）を検索して開きます。Visual Studio本体がある場合は、メニューの **ツール / Tools → コマンドライン / Command Line → Developer PowerShell** からも開けます。そこからリポジトリのフォルダーに移動してブリッジを起動します。初回はC++ブリッジをビルドします。
+   5. VS Codeでリポジトリのフォルダーを開き、**ターミナル / Terminal → 新しいターミナル / New Terminal** を選びます。ターミナルからブリッジを起動します。初回はC++ブリッジをビルドします。
 
       ```powershell
       npm install
@@ -92,7 +92,7 @@
       npm run depth:bridge
       ```
 
-   `npm run depth:bridge`はWindowsではPowerShellスクリプトを呼び出し、Visual Studioの`cl.exe`でビルドします。SDKとVisual Studio C++ツールが見つからない場合は、Developer PowerShellで起動しているか確認してください。
+   `npm run depth:bridge`はWindowsではPowerShellスクリプトを呼び出し、Visual StudioのC++ツールを自動検出して`cl.exe`でビルドします。自動検出に失敗する場合は、スタートメニューから **Developer PowerShell for VS** を開き、同じコマンドを実行してください。
    ViewerにD415が表示されない場合は、Windowsの「設定」→「プライバシーとセキュリティ」→「カメラ」でデスクトップアプリのカメラアクセスを許可し、USB 3ポートへ直接接続して再確認してください。
 
 3. 同じPCのデスクトップ版Chromeで[カメラシステム](https://self-video-abstraction-prototype.vercel.app)を開き、「接続」を押します。Chromeがローカルネットワークへのアクセスを確認した場合は許可します。「RealSense D415 接続中」と表示されれば接続できています。ブラウザーのカメラ権限は使いません。
