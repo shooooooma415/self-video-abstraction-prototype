@@ -35,7 +35,7 @@
 1. 使用するPCにNode.js 20以上とGitを用意し、このリポジトリを取得して依存関係をインストールします。
 
    ```bash
-   git clone https://github.com/shoooooma415/self-video-abstraction-prototype.git
+   git clone https://github.com/shooooooma415/self-video-abstraction-prototype.git
    cd self-video-abstraction-prototype
    npm install
    ```
