@@ -32,27 +32,50 @@
 
 この手順は、Vercelのカメラ画面を開くPCにD415をUSB接続して実施します。深度ブリッジはそのPCの`127.0.0.1:8090`で動き、映像・深度をVercelへ送信しません。
 
-1. macOSにHomebrewとNode.js 20以上を用意し、RealSense SDKをインストールします。
+1. 使用するPCにNode.js 20以上とGitを用意し、このリポジトリを取得して依存関係をインストールします。
 
    ```bash
-   brew install librealsense
-   ```
-
-2. このリポジトリを取得して依存関係をインストールします。
-
-   ```bash
+   git clone https://github.com/shoooooma415/self-video-abstraction-prototype.git
+   cd self-video-abstraction-prototype
    npm install
    ```
 
-3. D415をUSB接続し、ターミナルでブリッジを起動します。初回はC++ブリッジをビルドします。macOSがUSBアクセスのため管理者パスワードを求めたら入力し、このターミナルは開いたままにします。
+2. OSに応じてRealSense SDKとブリッジを準備します。
+
+   **macOS**
+
+   ```bash
+   brew install librealsense
+   npm run depth:bridge
+   ```
+
+   初回起動時にC++ブリッジをビルドします。macOSがUSBアクセスのため管理者パスワードを求めたら入力し、ターミナルは開いたままにします。
+
+   **Ubuntu Linux 22.04 / 24.04**
+
+   RealSenseの[公式Ubuntu配布手順](https://github.com/realsenseai/librealsense/blob/master/doc/distribution_linux.md)に従ってパッケージリポジトリを設定し、SDKと開発ファイルをインストールします。
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install librealsense2-utils librealsense2-dev
+   realsense-viewer
+   ```
+
+   ViewerでD415を認識することを確認して終了し、D415をUSB 3ポートに接続した状態でブリッジを起動します。
 
    ```bash
    npm run depth:bridge
    ```
 
-4. 同じPCのデスクトップ版Chromeで[カメラシステム](https://self-video-abstraction-prototype.vercel.app)を開き、「接続」を押します。Chromeがローカルネットワークへのアクセスを確認した場合は許可します。「RealSense D415 接続中」と表示されれば接続できています。ブラウザーのカメラ権限は使いません。
+   初回はC++ブリッジをビルドします。公式パッケージのudevルールが適用されていれば、通常は`sudo`なしで起動できます。カメラを認識しない場合は、公式ガイドのudevルールとカーネル要件を確認してください。
 
-5. 必要に応じて実験課題を別タブで開き、実写・アバター条件ではカメラシステムの「小窓で表示」を押してください。
+   **Windows**
+
+   RealSense SDK自体は[公式Windows手順](https://github.com/realsenseai/librealsense/blob/master/doc/distribution_windows.md)でインストールできますが、このリポジトリのブリッジ起動スクリプトとソケット実装はWindowsに対応していません。現時点ではWindows PC単体でカメラシステムへD415を接続できません。Windows利用時は、D415を接続したUbuntu LinuxまたはmacOSのPCでブリッジを起動してください。
+
+3. 同じPCのデスクトップ版Chromeで[カメラシステム](https://self-video-abstraction-prototype.vercel.app)を開き、「接続」を押します。Chromeがローカルネットワークへのアクセスを確認した場合は許可します。「RealSense D415 接続中」と表示されれば接続できています。ブラウザーのカメラ権限は使いません。
+
+4. 必要に応じて実験課題を別タブで開き、実写・アバター条件ではカメラシステムの「小窓で表示」を押してください。
 
 ブリッジを停止するときは、起動したターミナルで`Ctrl+C`を押します。接続できない場合は、D415のUSB接続、ブリッジの起動、本番URLがブリッジの許可オリジンに完全一致で登録されていることを確認してください。
 
