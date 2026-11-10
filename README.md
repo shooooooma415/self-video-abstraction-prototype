@@ -71,9 +71,11 @@
 
    **Windows 10 / 11**
 
-   1. [RealSense SDK for Windows](https://github.com/realsenseai/librealsense/blob/master/doc/distribution_windows.md)をインストールします。インストーラーにはViewerと開発用ファイルが含まれます。
-   2. Visual Studio 2019以降で「C++によるデスクトップ開発」をインストールします。
-   3. Visual Studioの「Developer PowerShell」を開き、リポジトリのフォルダーに移動してからブリッジを起動します。初回はC++ブリッジをビルドします。
+   1. [RealSense SDKのReleasesページ](https://github.com/realsenseai/librealsense/releases)を開き、最新の安定版リリース（Beta表記のないもの）の **Assets** を展開します。Windows用インストーラー（`RealSense.SDK-WIN10-バージョン.exe` 形式）をダウンロードします。ファイル名はSDKのバージョンによって変わります。
+   2. ダウンロードした`.exe`を実行し、Windowsのユーザーアカウント制御が表示されたら許可します。ライセンスに同意し、インストール先は通常そのままで進めます。RealSense ViewerとSDKの開発用ファイルが含まれる構成でインストールします。標準のインストール先は`C:\Program Files (x86)\Intel RealSense SDK 2.0`です。
+   3. Visual Studio 2019以降をインストールし、ワークロード「C++によるデスクトップ開発」を選びます。これはブリッジをC++でビルドするために必要です。
+   4. D415をUSB 3ポートに接続し、スタートメニューから **Intel RealSense Viewer** を起動します。デバイス一覧にD415が出たら深度・カラーのストリームを開始し、映像が表示されることを確認してViewerを閉じます。
+   5. Visual Studioの **Developer PowerShell** を起動し、リポジトリのフォルダーに移動してブリッジを起動します。初回はC++ブリッジをビルドします。
 
       ```powershell
       npm install
@@ -87,9 +89,8 @@
       npm run depth:bridge
       ```
 
-   4. D415をUSB 3ポートに接続し、`realsense-viewer`で認識されることを確認します。認識されない場合は、Windowsの「設定」→「プライバシーとセキュリティ」→「カメラ」でデスクトップアプリのカメラアクセスを許可してください。
-
    `npm run depth:bridge`はWindowsではPowerShellスクリプトを呼び出し、Visual Studioの`cl.exe`でビルドします。SDKとVisual Studio C++ツールが見つからない場合は、Developer PowerShellで起動しているか確認してください。
+   ViewerにD415が表示されない場合は、Windowsの「設定」→「プライバシーとセキュリティ」→「カメラ」でデスクトップアプリのカメラアクセスを許可し、USB 3ポートへ直接接続して再確認してください。
 
 3. 同じPCのデスクトップ版Chromeで[カメラシステム](https://self-video-abstraction-prototype.vercel.app)を開き、「接続」を押します。Chromeがローカルネットワークへのアクセスを確認した場合は許可します。「RealSense D415 接続中」と表示されれば接続できています。ブラウザーのカメラ権限は使いません。
 
