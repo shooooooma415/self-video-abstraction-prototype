@@ -9,7 +9,8 @@
 - `npm run dev`
 - 表示された `http://localhost:5173/` をデスクトップ版 Chrome で開き、「接続」を押します。
 - 偶奇判定課題は別ターミナルで `npm run dev:parity` を実行し、表示されたURL（通常 `http://localhost:5174/`）を**別タブ**で開きます。5174番が使用中ならViteが次の空きポートを選びます。カメラ側（5173）とは独立して起動・停止できます。実験課題を開始する前にカメラ側で各表示条件を選び、実写・アバター条件では小窓を表示してください。
-- 別のターミナルで `npm run depth:bridge` を実行すると、RealSense D415 の深度ストリームをローカル連携します。macOS では USB アクセスのため管理者パスワードが求められる場合があります。
+- カメラ画面の「端末カメラを接続」から、PC内蔵またはUSBカメラをブラウザー経由で使えます。初回はカメラ利用を許可してください。端末カメラでは顔の見かけの大きさから距離を推定します。
+- 別のターミナルで `npm run depth:bridge` を実行すると、RealSense D415 の実測深度を利用できます。macOS では USB アクセスのため管理者パスワードが求められる場合があります。
 - `npm run build` で本番ビルドします。
 - 偶奇判定課題のみをビルドする場合は `npm run build:parity` を実行します。
 
@@ -17,7 +18,7 @@
 
 [自己映像表示・偶奇判定プロトタイプの構成図](docs/architecture.html) を参照してください。カメラアプリ、実験課題、RealSense 深度ブリッジ間のデータの流れを示しています。
 
-深度カメラブリッジは別ターミナルで起動します。マイクやブラウザーのカメラ権限は使いません。
+端末カメラはブラウザーのカメラ権限を使い、深度ブリッジなしで動作します。D415を利用する場合は深度カメラブリッジを別ターミナルで起動します。
 
 ## Vercelへの公開
 
@@ -124,11 +125,13 @@
 
 ## 顔アバター
 
-Three.js と three-vrm で VRM モデルを 3D 表示し、Face Landmarker の3D顔変換行列と blendshape で顔の向き・まばたき・口の動きを反映します。位置と大きさは D415 の深度・カメラ内部パラメーターで合わせます。AvatarSample_A（女性）とAvatarSample_C（男性）の2体を同梱し、起動時に順番に読み込んでモデル選択メニューから切り替えられます。読み込んだモデルはメモリに保持し、切り替え時に再解析しません。モデル別の利用条件は [third_party/AvatarSample_A_LICENSE.md](third_party/AvatarSample_A_LICENSE.md) と [third_party/AvatarSample_C_LICENSE.md](third_party/AvatarSample_C_LICENSE.md) を参照してください。
+Three.js と three-vrm で VRM モデルを 3D 表示し、Face Landmarker の3D顔変換行列と blendshape で顔の向き・まばたき・口の動きを反映します。D415利用時は深度とカメラ内部パラメーターで位置・大きさを合わせます。端末カメラ利用時は顔幅と仮定した顔幅・画角から距離を推定するため、実測深度より精度が低く、カメラや参加者との距離によって表示サイズがずれる場合があります。AvatarSample_A（女性）とAvatarSample_C（男性）の2体を同梱し、起動時に順番に読み込んでモデル選択メニューから切り替えられます。読み込んだモデルはメモリに保持し、切り替え時に再解析しません。モデル別の利用条件は [third_party/AvatarSample_A_LICENSE.md](third_party/AvatarSample_A_LICENSE.md) と [third_party/AvatarSample_C_LICENSE.md](third_party/AvatarSample_C_LICENSE.md) を参照してください。
 
-RealSense D415 の RGB 映像と深度フレームは `npm run depth:bridge` のローカルブリッジから取得します。ブリッジはカラー座標に整列した深度とカメラ内部パラメーターを返し、鼻位置の近傍深度からアバターの実距離・投影サイズを計算します。深度ブリッジ未接続時は、奥行きに合わせたアバター表示を行いません。
+アバター条件では「顔への位置合わせ」の左右・上下・大きさスライダーで、画面上の重なりを微調整できます。リセットで初期値に戻ります。
 
-カメラ映像・顔ランドマーク・深度フレームは端末内で処理し、録画・保存・送信しません。Face Landmarker の WASM とモデルは初回利用時に配信元から取得します。VRM ファイルも端末内で読み込みます。内蔵 AvatarSample_A の条件は [third_party/AvatarSample_A_LICENSE.md](third_party/AvatarSample_A_LICENSE.md) に記載しています。
+端末カメラの映像は `getUserMedia` でブラウザー内に取り込みます。RealSense D415 の RGB 映像と深度フレームは `npm run depth:bridge` のローカルブリッジから取得します。ブリッジはカラー座標に整列した深度とカメラ内部パラメーターを返し、鼻位置の近傍深度からアバターの実距離・投影サイズを計算します。
+
+カメラ映像・顔ランドマーク・深度フレームは端末内で処理し、録画・保存・送信しません。端末カメラ利用時はブラウザーのカメラ許可が必要です。Face Landmarker の WASM とモデルは初回利用時に配信元から取得します。VRM ファイルも端末内で読み込みます。内蔵 AvatarSample_A の条件は [third_party/AvatarSample_A_LICENSE.md](third_party/AvatarSample_A_LICENSE.md) に記載しています。
 
 ## 制限
 
