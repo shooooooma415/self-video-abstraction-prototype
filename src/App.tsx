@@ -7,6 +7,8 @@ import './prototype.css'
 
 type Condition = 'hidden' | 'original' | 'avatar'
 type DepthFrame = { width: number; height: number; depthScale: number; fx: number; fy: number; ppx: number; ppy: number; pixels: Uint16Array; color: Uint8Array; colorStride: number }
+type CameraMode = 'device' | 'depth' | null
+type AvatarAlignment = { x: number; y: number; scale: number }
 type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
 type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseYaw: number }
 type ModelOption = { id: string; name: string; url?: string }
@@ -65,6 +67,7 @@ function disposeVrm(vrm: VRM) {
 
 export default function App() {
   const stageRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
   const colorCanvasRef = useRef<HTMLCanvasElement>(null)
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
   const pipWindowRef = useRef<Window | null>(null)
@@ -77,9 +80,14 @@ export default function App() {
   const bundledBuffersRef = useRef<Map<string, Promise<ArrayBuffer>>>(new Map())
   const trackingRef = useRef<Tracking | null>(null)
   const depthFrameRef = useRef<DepthFrame | null>(null)
+  const cameraModeRef = useRef<CameraMode>(null)
+  const deviceProjectionRef = useRef<{ width: number; height: number; fx: number; fy: number; ppx: number; ppy: number } | null>(null)
+  const avatarAlignmentRef = useRef<AvatarAlignment>({ x: 0, y: 0, scale: 1 })
   const conditionRef = useRef<Condition>('avatar')
   const [condition, setCondition] = useState<Condition>('avatar')
   const [cameraOn, setCameraOn] = useState(false)
+  const [cameraMode, setCameraMode] = useState<CameraMode>(null)
+  const [avatarAlignment, setAvatarAlignment] = useState<AvatarAlignment>({ x: 0, y: 0, scale: 1 })
   const [tracking, setTracking] = useState(false)
   const [depthConnected, setDepthConnected] = useState(false)
   const [faceDepth, setFaceDepth] = useState<number | null>(null)
@@ -93,8 +101,9 @@ export default function App() {
   const [pipSupported] = useState(() => typeof window !== 'undefined' && 'documentPictureInPicture' in window)
 
   useEffect(() => { conditionRef.current = condition }, [condition])
+  useEffect(() => { avatarAlignmentRef.current = avatarAlignment }, [avatarAlignment])
   useEffect(() => {
-    if (!cameraOn) return
+    if (!cameraOn || cameraModeRef.current !== 'depth') return
     let cancelled = false
     let timer = 0
     const pollDepth = async () => {
@@ -212,22 +221,24 @@ export default function App() {
         const depth = pose.depthMeters
         const overlayDepth = Math.max(depth - 0.02, 0.03)
         const frame = depthFrameRef.current
-        if (frame) {
-          camera.fov = 2 * Math.atan(frame.height / (2 * frame.fy)) * 180 / Math.PI
+        const projection = frame ?? deviceProjectionRef.current
+        if (projection) {
+          camera.fov = 2 * Math.atan(projection.height / (2 * projection.fy)) * 180 / Math.PI
           camera.aspect = stage.clientWidth / Math.max(stage.clientHeight, 1)
           camera.updateProjectionMatrix()
         }
         const yawWidthCorrection = Math.min(1.8, 1 / Math.max(Math.cos(pose.yaw), 0.56))
-        const targetWidth = Math.max(0.01, frame ? pose.width * frame.width / frame.fx * overlayDepth * yawWidthCorrection * 1.28 : 0.2)
+        const alignment = avatarAlignmentRef.current
+        const targetWidth = Math.max(0.01, (projection ? pose.width * projection.width / projection.fx * overlayDepth * yawWidthCorrection * 1.28 : 0.2) * alignment.scale)
         const scale = targetWidth / Math.max(loaded.width, 0.001)
         const avatarScene = loaded.vrm.scene
         avatarScene.scale.setScalar(scale)
         avatarScene.rotation.order = 'YXZ'
         avatarScene.rotation.set(pose.pitch, loaded.baseYaw + pose.yaw, pose.roll)
         const offset = loaded.center.clone().multiplyScalar(scale).applyEuler(avatarScene.rotation)
-        const centerX = frame ? ((pose.x * frame.width - frame.ppx) / frame.fx) * overlayDepth + overlayDepth * 0.015 : (pose.x - 0.485) * overlayDepth
-        const centerY = frame ? -((pose.y * frame.height - frame.ppy) / frame.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
-        avatarScene.position.set(centerX - offset.x, centerY - offset.y, -overlayDepth - offset.z)
+        const centerX = projection ? ((pose.x * projection.width - projection.ppx) / projection.fx) * overlayDepth + overlayDepth * 0.015 : (pose.x - 0.485) * overlayDepth
+        const centerY = projection ? -((pose.y * projection.height - projection.ppy) / projection.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
+        avatarScene.position.set(centerX - alignment.x * overlayDepth - offset.x, centerY - alignment.y * overlayDepth - offset.y, -overlayDepth - offset.z)
 
         const expressions = loaded.vrm.expressionManager
         expressions?.setValue('blink', clamp(pose.blink, 0, 1))
@@ -408,6 +419,24 @@ export default function App() {
     let lastDetection = 0
     const detect = (time: number) => {
       frame = requestAnimationFrame(detect)
+      if (cameraModeRef.current === 'device') {
+        const video = videoRef.current
+        const context = colorCanvas.getContext('2d')
+        if (video && context && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          if (colorCanvas.width !== video.videoWidth || colorCanvas.height !== video.videoHeight) {
+            colorCanvas.width = video.videoWidth
+            colorCanvas.height = video.videoHeight
+          }
+          const stage = stageRef.current
+          const width = stage?.clientWidth || video.videoWidth
+          const height = stage?.clientHeight || video.videoHeight
+          const fovX = 63 * Math.PI / 180
+          const fx = width / (2 * Math.tan(fovX / 2))
+          const fy = fx * height / width
+          deviceProjectionRef.current = { width, height, fx, fy, ppx: width / 2, ppy: height / 2 }
+          context.drawImage(video, 0, 0, colorCanvas.width, colorCanvas.height)
+        }
+      }
       const landmarker = landmarkerRef.current
       if (!landmarker || colorCanvas.width < 1 || colorCanvas.height < 1 || time - lastDetection < 50) return
       lastDetection = time
@@ -463,7 +492,12 @@ export default function App() {
         const pitch = clamp(posePitch ?? landmarkPitch, -0.65, 0.65)
         const prior = trackingRef.current
         const depthFrame = depthFrameRef.current
-        const rawDepth = depthFrame ? sampleDepth(depthFrame, nose.x, nose.y) : null
+        const projection = depthFrame ?? deviceProjectionRef.current
+        const rawDepth = depthFrame
+          ? sampleDepth(depthFrame, nose.x, nose.y)
+          : cameraModeRef.current === 'device' && projection
+            ? clamp(0.14 * projection.fx / Math.max(faceWidth * projection.width, 1), 0.25, 2.5)
+            : null
         const measured: Tracking = {
           x: centerX,
           y: centerY,
@@ -500,28 +534,56 @@ export default function App() {
     return () => cancelAnimationFrame(frame)
   }, [cameraOn])
 
-  const startCamera = async () => {
+  const loadFaceTracker = async () => {
+    if (landmarkerRef.current) return
+    const files = await FilesetResolver.forVisionTasks(wasmUrl)
+    let landmarker: FaceLandmarker
+    try {
+      landmarker = await FaceLandmarker.createFromOptions(files, {
+        baseOptions: { modelAssetPath: faceModelUrl, delegate: 'GPU' },
+        runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+      })
+    } catch {
+      landmarker = await FaceLandmarker.createFromOptions(files, {
+        baseOptions: { modelAssetPath: faceModelUrl, delegate: 'CPU' },
+        runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+      })
+    }
+    landmarkerRef.current = landmarker
+  }
+
+  const startDeviceCamera = async () => {
+    setError('')
+    let stream: MediaStream | null = null
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('このブラウザーでは端末カメラを利用できません。HTTPSまたはlocalhostで開いてください。')
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
+      const video = videoRef.current
+      if (!video) throw new Error('カメラ映像を初期化できませんでした。')
+      video.srcObject = stream
+      await video.play()
+      await loadFaceTracker()
+      cameraModeRef.current = 'device'
+      setCameraMode('device')
+      setCameraOn(true)
+    } catch (cause) {
+      stream?.getTracks().forEach((track) => track.stop())
+      if (videoRef.current?.srcObject === stream) videoRef.current.srcObject = null
+      console.error(cause)
+      setError(cause instanceof Error && (cause.name !== 'Error' || cause.message.includes('このブラウザー') || cause.message.includes('カメラ映像'))
+        ? `端末カメラを開始できません: ${cause.message}`
+        : '顔追跡モデルを読み込めません。ネットワーク接続を確認してください。')
+    }
+  }
+
+  const startDepthCamera = async () => {
     setError('')
     try {
-      const response = await fetchDepthBridge('http://127.0.0.1:8090/health')
-        .catch(() => { throw new Error('RealSense depth bridge is not available') })
-      if (!response.ok) throw new Error('RealSense depth bridge is not available')
-      if (!landmarkerRef.current) {
-        const files = await FilesetResolver.forVisionTasks(wasmUrl)
-        let landmarker: FaceLandmarker
-        try {
-          landmarker = await FaceLandmarker.createFromOptions(files, {
-            baseOptions: { modelAssetPath: faceModelUrl, delegate: 'GPU' },
-            runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
-          })
-        } catch {
-          landmarker = await FaceLandmarker.createFromOptions(files, {
-            baseOptions: { modelAssetPath: faceModelUrl, delegate: 'CPU' },
-            runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
-          })
-        }
-        landmarkerRef.current = landmarker
-      }
+      const response = await fetchDepthBridge('http://127.0.0.1:8090/health').catch(() => { throw new Error('bridge') })
+      if (!response.ok) throw new Error('bridge')
+      await loadFaceTracker()
+      cameraModeRef.current = 'depth'
+      setCameraMode('depth')
       setCameraOn(true)
     } catch (cause) {
       console.error(cause)
@@ -533,6 +595,8 @@ export default function App() {
 
   const stopCamera = () => {
     trackingRef.current = null
+    cameraModeRef.current = null
+    setCameraMode(null)
     depthFrameRef.current = null
     setTracking(false)
     setDepthConnected(false)
@@ -540,6 +604,8 @@ export default function App() {
     setFaceYaw(null)
     setFaceRoll(null)
     setCameraOn(false)
+    videoRef.current?.srcObject && (videoRef.current.srcObject as MediaStream).getTracks().forEach((track) => track.stop())
+    if (videoRef.current) videoRef.current.srcObject = null
     const canvas = colorCanvasRef.current
     const context = canvas?.getContext('2d')
     if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height)
@@ -625,9 +691,10 @@ export default function App() {
 
         <div className="setup-section">
           <div className="section-kicker"><span>02</span> カメラ</div>
-          <div className="camera-card"><span className={`camera-indicator ${depthConnected ? 'on' : ''}`} /><div><b>{depthConnected ? 'RealSense D415 接続中' : 'D415 深度ブリッジ未接続'}</b><small>{depthConnected ? 'カラー映像・深度フレーム受信中' : 'npm run depth:bridge で起動'}</small></div>
-            {cameraOn ? <button className="stop-button" onClick={stopCamera}>停止</button> : <button className="connect-button" onClick={() => void startCamera()}>接続</button>}
+          <div className="camera-card"><span className={`camera-indicator ${cameraOn ? 'on' : ''}`} /><div><b>{cameraOn ? (cameraMode === 'device' ? '端末カメラ接続中' : 'RealSense D415 接続中') : 'カメラ未接続'}</b><small>{cameraOn ? (cameraMode === 'device' ? '距離は顔サイズから推定' : depthConnected ? 'カラー映像・深度フレーム受信中' : '深度フレーム受信待ち') : '端末カメラまたはD415を選択'}</small></div>
+            {cameraOn && <button className="stop-button" onClick={stopCamera}>停止</button>}
           </div>
+          {!cameraOn && <div className="camera-actions"><button className="connect-button" onClick={() => void startDeviceCamera()}>端末カメラを接続</button><button className="secondary-camera-button" onClick={() => void startDepthCamera()}>D415を接続</button></div>}
           {error && <p className="error" role="alert">{error}</p>}
         </div>
 
@@ -650,14 +717,21 @@ export default function App() {
       <section className="preview-panel">
         <div className="preview-heading"><div><div className="eyebrow">リアルタイムプレビュー</div><h2>あなたの作業スペース</h2></div><div className="preview-actions">{pipSupported && <button className="pip-button" onClick={() => void openPictureInPicture()}>小窓で表示</button>}<div className="live-meta"><i className={cameraOn ? 'on' : ''} /> {cameraOn ? 'LIVE PREVIEW' : 'PREVIEW'} <span>│</span> 4:3</div></div></div>
         <div className={`preview-stage ${condition === 'hidden' ? 'is-hidden' : ''}`} ref={stageRef}>
+          <video ref={videoRef} className="camera-source" playsInline muted />
           <canvas ref={colorCanvasRef} className="preview-video" />
           <canvas ref={avatarCanvasRef} className={`avatar-canvas ${condition === 'avatar' ? 'visible' : ''}`} />
           <span className="frame-corner top-left" /><span className="frame-corner top-right" /><span className="frame-corner bottom-left" /><span className="frame-corner bottom-right" />
           {condition === 'hidden' && <div className="hidden-overlay"><span>◉</span><b>自己映像は非表示です</b><small>カメラと顔トラッキングは継続しています</small></div>}
-          {!cameraOn && condition !== 'hidden' && <div className="preview-start"><span>◉</span><b>カメラを接続してプレビューを開始</b><button onClick={() => void startCamera()}>カメラを接続</button></div>}
-          {condition === 'avatar' && cameraOn && !depthConnected && <div className="model-prompt">深度ブリッジを起動すると、D415の距離に合わせて表示します</div>}
+          {!cameraOn && condition !== 'hidden' && <div className="preview-start"><span>◉</span><b>カメラを接続してプレビューを開始</b><button onClick={() => void startDeviceCamera()}>端末カメラを接続</button></div>}
+          {condition === 'avatar' && cameraOn && cameraMode === 'device' && <div className="model-prompt">距離は顔の見かけの大きさから推定しています</div>}
         </div>
-        <div className="preview-caption"><span className="caption-index">{activeCondition.number}</span><div className="caption-copy"><b>{activeCondition.title}</b><small>{activeCondition.description}</small></div><span className={`tracking-label ${tracking && depthConnected ? 'on' : ''}`}><i />{tracking && depthConnected ? `顔・深度を追跡中 · ${faceDepth ? `${faceDepth.toFixed(2)} m` : '距離未取得'}${faceYaw === null ? '' : ` · 向き ${Math.round(faceYaw * 180 / Math.PI)}°`}${faceRoll === null ? '' : ` · 傾き ${Math.round(faceRoll * 180 / Math.PI)}°`}` : '顔・深度の接続待ち'}</span></div>
+        <div className="preview-caption"><span className="caption-index">{activeCondition.number}</span><div className="caption-copy"><b>{activeCondition.title}</b><small>{activeCondition.description}</small></div><span className={`tracking-label ${tracking ? 'on' : ''}`}><i />{tracking ? `${cameraMode === 'device' ? '顔追跡・距離推定' : depthConnected ? '顔・深度を追跡中' : '顔を追跡中'} · ${faceDepth ? `${faceDepth.toFixed(2)} m` : '距離未取得'}${faceYaw === null ? '' : ` · 向き ${Math.round(faceYaw * 180 / Math.PI)}°`}${faceRoll === null ? '' : ` · 傾き ${Math.round(faceRoll * 180 / Math.PI)}°`}` : '顔追跡の開始待ち'}</span></div>
+        {condition === 'avatar' && cameraOn && <div className="alignment-panel">
+          <div className="alignment-heading"><b>顔への位置合わせ</b><button onClick={() => setAvatarAlignment({ x: 0, y: 0, scale: 1 })}>リセット</button></div>
+          <label>左右位置 <input aria-label="アバターの左右位置" type="range" min="-0.12" max="0.12" step="0.005" value={avatarAlignment.x} onChange={(event) => setAvatarAlignment((value) => ({ ...value, x: Number(event.target.value) }))} /><span>{avatarAlignment.x > 0 ? '+' : ''}{Math.round(avatarAlignment.x * 100)}%</span></label>
+          <label>上下位置 <input aria-label="アバターの上下位置" type="range" min="-0.12" max="0.12" step="0.005" value={avatarAlignment.y} onChange={(event) => setAvatarAlignment((value) => ({ ...value, y: Number(event.target.value) }))} /><span>{avatarAlignment.y > 0 ? '+' : ''}{Math.round(avatarAlignment.y * 100)}%</span></label>
+          <label>大きさ <input aria-label="アバターの大きさ" type="range" min="0.75" max="1.25" step="0.01" value={avatarAlignment.scale} onChange={(event) => setAvatarAlignment((value) => ({ ...value, scale: Number(event.target.value) }))} /><span>{Math.round(avatarAlignment.scale * 100)}%</span></label>
+        </div>}
         <div className="condition-message"><span>✦</span><span>条件{activeCondition.number}では顔の動きに合わせてアバターが追従します。</span></div>
       </section>
     </section>
