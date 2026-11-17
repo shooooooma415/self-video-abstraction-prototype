@@ -10,7 +10,7 @@ type DepthFrame = { width: number; height: number; depthScale: number; fx: numbe
 type CameraMode = 'device' | 'depth' | null
 type AvatarAlignment = { x: number; y: number; scale: number }
 type Tracking = { x: number; y: number; width: number; yaw: number; pitch: number; roll: number; blink: number; mouth: number; depthMeters: number | null }
-type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseYaw: number }
+type LoadedAvatar = { vrm: VRM; box: THREE.Box3; center: THREE.Vector3; width: number; baseRotation: THREE.Quaternion }
 type ModelOption = { id: string; name: string; url?: string }
 type DocumentPictureInPictureApi = { requestWindow(options?: { width?: number; height?: number }): Promise<Window> }
 
@@ -183,6 +183,8 @@ export default function App() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.outputColorSpace = THREE.SRGBColorSpace
     const scene = new THREE.Scene()
+    const poseEuler = new THREE.Euler(0, 0, 0, 'YXZ')
+    const poseQuaternion = new THREE.Quaternion()
     threeSceneRef.current = scene
     const camera = new THREE.PerspectiveCamera(50, 4 / 3, 0.03, 8)
     camera.position.set(0, 0, 0)
@@ -233,8 +235,12 @@ export default function App() {
         const scale = targetWidth / Math.max(loaded.width, 0.001)
         const avatarScene = loaded.vrm.scene
         avatarScene.scale.setScalar(scale)
-        avatarScene.rotation.order = 'YXZ'
-        avatarScene.rotation.set(pose.pitch, loaded.baseYaw + pose.yaw, pose.roll)
+        // Apply the tracked camera-space pose before the model's rest rotation.
+        // This matters for VRM 0.x models whose rest rotation is 180° around Y:
+        // composing the rotations in the opposite order reverses nod/roll axes.
+        poseEuler.set(pose.pitch, pose.yaw, pose.roll)
+        poseQuaternion.setFromEuler(poseEuler).multiply(loaded.baseRotation)
+        avatarScene.quaternion.copy(poseQuaternion)
         const offset = loaded.center.clone().multiplyScalar(scale).applyEuler(avatarScene.rotation)
         const centerX = projection ? ((pose.x * projection.width - projection.ppx) / projection.fx) * overlayDepth + overlayDepth * 0.015 : (pose.x - 0.485) * overlayDepth
         const centerY = projection ? -((pose.y * projection.height - projection.ppy) / projection.fy) * overlayDepth : (0.5 - pose.y) * overlayDepth
@@ -331,7 +337,7 @@ export default function App() {
       if (box.isEmpty()) throw new Error('モデルの顔メッシュを見つけられませんでした。')
       const center = vrm.scene.worldToLocal(box.getCenter(new THREE.Vector3()))
       const size = box.getSize(new THREE.Vector3())
-      const model = { vrm, box, center, width: Math.max(size.x, 0.001), baseYaw: vrm.scene.rotation.y }
+      const model = { vrm, box, center, width: Math.max(size.x, 0.001), baseRotation: vrm.scene.quaternion.clone() }
       threeScene.add(vrm.scene)
       avatarCacheRef.current.set(id, model)
       setReadyModelIds((current) => current.includes(id) ? current : [...current, id])
